@@ -1,0 +1,4 @@
+export const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+export const money=c=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100);
+export async function api(path,{method='GET',body,token}={}){const r=await fetch(path,{method,credentials:'same-origin',headers:{'content-type':'application/json','x-nearkey':'1',...(token?{authorization:`Bearer ${token}`}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
+export function toast(message,bad=false){let n=$('#toast');if(!n){n=document.createElement('div');n.id='toast';document.body.append(n)}n.className=bad?'toast bad':'toast';n.textContent=message;n.hidden=false;clearTimeout(n.t);n.t=setTimeout(()=>n.hidden=true,4500)}
