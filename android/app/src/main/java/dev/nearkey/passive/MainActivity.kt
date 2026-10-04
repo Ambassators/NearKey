@@ -102,7 +102,9 @@ class MainActivity : Activity() {
         onlineText = text("Phone channel: offline")
         bleText = text("Bluetooth: stopped")
         challengeText = text("No pending server challenge")
-        statusText = text("Enroll once using the browser's code and reachable server URL.")
+        statusText = text(if (enrolled())
+            "Locally enrolled · ${key.backing()}. Keep the app open for the authenticated phone channel."
+            else "Enroll once using the browser's code and reachable server URL.")
         Button(this).apply {
             text = "Forget local enrollment"
             setOnClickListener {
@@ -171,14 +173,16 @@ class MainActivity : Activity() {
                 enrolling = false
                 try {
                     check(result != null) { error ?: "Enrollment failed" }
-                    val phoneId = result.getString("phoneId")
-                    val token = result.getString("deviceToken")
+                    // Reject malformed responses without formatting credential-bearing JSON into an error.
+                    val phoneId = requireNotNull(result.opt("phoneId") as? String) { "Invalid enrollment response" }
+                    val token = requireNotNull(result.opt("deviceToken") as? String) { "Invalid enrollment response" }
                     require(phoneId.isNotBlank() && phoneId.length <= 128 && token.isNotEmpty() &&
                         token.length <= 1024 && token.all { it.code in 33..126 }) {
                         "Invalid enrollment response"
                     }
                     check(prefs.edit().putString("origin", origin.toString()).putString("phoneId", phoneId)
                         .putString("token", token).commit()) { "Cannot save phone credentials" }
+                    urlInput.setText(origin.toString())
                     codeInput.text.clear()
                     statusText.text = "Enrolled · ${key.backing()}. Use setup advertising for the first browser chooser."
                     connect()
@@ -356,16 +360,22 @@ class MainActivity : Activity() {
 
     private fun reset() {
         generation++
+        permissionAction = null
         handler.removeCallbacks(reconnect)
         disconnect("Local enrollment forgotten")
         api.cancelRequests()
         enrolling = false
-        try {
-            check(prefs.edit().clear().commit()) { "Cannot erase local credentials" }
-            key.delete()
-            urlInput.text.clear(); codeInput.text.clear()
-            statusText.text = "Local token/key erased. Server phone enrollment is unchanged; offline reset required before enrolling again."
-        } catch (e: Exception) { statusText.text = e.message ?: "Local reset failed" }
+        // Attempt both erasures even if one fails; never reconnect during a partial reset.
+        val credentialsErased = try { prefs.edit().clear().commit() } catch (_: Exception) { false }
+        val keyErased = try { key.delete(); true } catch (_: Exception) { false }
+        urlInput.text.clear(); codeInput.text.clear()
+        val failedParts = listOfNotNull(
+            if (credentialsErased) null else "credential storage",
+            if (keyErased) null else "Keystore"
+        ).joinToString(" and ")
+        statusText.text = if (failedParts.isEmpty())
+            "Local token/key erased. Server phone enrollment is unchanged; offline reset required before enrolling again."
+        else "Local reset incomplete ($failedParts). Retry Forget locally. Server enrollment is unchanged; offline reset is still required."
         updateControls()
     }
 }
