@@ -25,33 +25,62 @@ object Protocol {
     fun integer(json: JSONObject, key: String): Long {
         val value = json.get(key)
         require(value is Int || value is Long) { "Invalid $key" }
-        return (value as Number).toLong()
+        val number = (value as Number).toLong()
+        require(number in -9_007_199_254_740_991L..9_007_199_254_740_991L) { "Invalid $key" }
+        return number
+    }
+
+    private fun string(json: JSONObject, key: String): String {
+        val value = json.get(key)
+        require(value is String) { "Invalid $key" }
+        return value
     }
 
     fun challenge(json: JSONObject, phoneId: String, now: Long): Challenge {
+        require(json.keys().asSequence().toSet() == setOf("v", "id", "nonce", "phoneId", "expiresAt", "operation")) {
+            "Unexpected challenge fields"
+        }
         require(integer(json, "v") == VERSION.toLong()) { "Unsupported challenge version" }
-        val id = json.getString("id")
+        val id = string(json, "id")
         require(UUID.fromString(id).toString() == id) { "Invalid challenge ID" }
-        val nonce = json.getString("nonce")
+        val nonce = string(json, "nonce")
         require(nonce.matches(Regex("[A-Za-z0-9_-]{43}"))) { "Invalid nonce" }
         val decoded = Base64.getUrlDecoder().decode(nonce)
         require(decoded.size == 32 && base64(decoded) == nonce) { "Invalid nonce encoding" }
-        require(json.getString("phoneId") == phoneId) { "Challenge is for another phone" }
+        require(phoneId.isNotEmpty() && string(json, "phoneId") == phoneId) { "Challenge is for another phone" }
         val expiry = integer(json, "expiresAt")
-        require(expiry > now && expiry - now <= 60_000) { "Expired challenge or phone clock is incorrect" }
+        require(now >= 0 && expiry > now && expiry - now <= 60_000) { "Expired challenge or phone clock is incorrect" }
         val operation = json.getJSONObject("operation")
+        require(operation.keys().asSequence().toSet() == setOf("recipientId", "recipientName", "amountCents", "note")) {
+            "Unexpected operation fields"
+        }
         val amount = integer(operation, "amountCents")
-        require(amount > 0) { "Invalid operation" }
-        return Challenge(id, nonce, phoneId, expiry, operation.getString("recipientId"),
-            operation.getString("recipientName"), amount, operation.getString("note"))
+        val recipientId = string(operation, "recipientId")
+        val recipientName = string(operation, "recipientName")
+        val note = string(operation, "note")
+        require(amount > 0 && recipientId.isNotEmpty() && recipientName.isNotEmpty() && note.length <= 120) {
+            "Invalid operation"
+        }
+        return Challenge(id, nonce, phoneId, expiry, recipientId, recipientName, amount, note)
     }
 
     fun checkRequest(bytes: ByteArray, challenge: Challenge?, now: Long) {
         require(challenge != null && now < challenge.expiresAt) { "No live server challenge" }
-        val json = JSONObject(utf8(bytes))
+        require(bytes.isNotEmpty() && bytes.size <= 1023) { "Invalid BLE request size" }
+        val text = utf8(bytes)
+        // Android JSONObject is lenient (comments, single quotes, trailing data). This
+        // frame has exactly four flat string/integer members, so validate strict JSON
+        // syntax first; the key-set check also rejects duplicate members.
+        val jsonString = """"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*""""
+        val space = """[ \t\r\n]*"""
+        val member = "$jsonString$space:$space(?:$jsonString|-?(?:0|[1-9][0-9]*))"
+        require(Regex("$space\\{$space$member(?:$space,$space$member){3}$space\\}$space").matches(text)) {
+            "Malformed BLE request"
+        }
+        val json = JSONObject(text)
         require(json.keys().asSequence().toSet() == setOf("v", "type", "challengeId", "nonce")) { "Unexpected request fields" }
-        require(integer(json, "v") == VERSION.toLong() && json.getString("type") == "prove")
-        require(json.getString("challengeId") == challenge.id && json.getString("nonce") == challenge.nonce) {
+        require(integer(json, "v") == VERSION.toLong() && json.get("type") == "prove")
+        require(json.get("challengeId") == challenge.id && json.get("nonce") == challenge.nonce) {
             "Request does not match the pending server challenge"
         }
     }
