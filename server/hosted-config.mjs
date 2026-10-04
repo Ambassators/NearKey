@@ -17,6 +17,7 @@ export function hostedConfig(env = process.env) {
   }
   return {publicOrigin: env.PUBLIC_ORIGIN, phoneOrigin: env.PUBLIC_ORIGIN,
     username: env.DEMO_USERNAME, password: env.DEMO_PASSWORD,
+    demoPhoneSetup: env.DEMO_PHONE_SETUP !== 'false',
     stateStore: redisStore({url: env.UPSTASH_REDIS_REST_URL, token: env.UPSTASH_REDIS_REST_TOKEN,
       key: env.NEARKEY_STATE_KEY || 'nearkey:production:v1'})};
 }

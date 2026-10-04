@@ -171,7 +171,7 @@ async function staticFiles(root) {
 }
 
 export async function createApp({publicOrigin = 'http://localhost:5173', phoneOrigin = publicOrigin, username = 'admin',
-  password = 'mint-river-otter-47', now = Date.now, root = ROOT, pairingFile = null, stateStore = null, channelPollMs = 2000} = {}) {
+  password = 'mint-river-otter-47', now = Date.now, root = ROOT, pairingFile = null, stateStore = null, channelPollMs = 2000, demoPhoneSetup = false} = {}) {
   if (stateStore && pairingFile) throw new Error('Choose shared storage or a local pairing file');
   validateOrigin(publicOrigin);
   validatePhoneOrigin(phoneOrigin);
@@ -318,7 +318,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
     for (const [token, session] of sessions) if (session.expiresAt <= time) revokeSession(token);
     if (pairing?.expiresAt <= time) clearPairing();
     if (pairing?.replacementPhoneId && (phone?.id !== pairing.replacementPhoneId
-        || sessions.get(pairing.session)?.verifiedAt == null)) clearPairing();
+        || (!demoPhoneSetup && sessions.get(pairing.session)?.verifiedAt == null))) clearPairing();
     for (const record of challenges.values()) {
       if (pending(record) && record.challenge.expiresAt <= time) endChallenge(record, 'expired');
     }
@@ -356,7 +356,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
       fail(403, 'verification_required', 'Complete Bluetooth verification to finish signing in');
     }
   }
-  const phoneStatus = () => phone ? {id: phone.id, label: phone.label,
+  const phoneStatus = () => phone ? {id: phone.id, label: demoPhoneSetup ? 'Demo phone' : phone.label,
     online: phone.socket?.readyState === WebSocket.OPEN} : null;
   function sessionState(token) {
     const session = sessions.get(token);
@@ -364,7 +364,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
     const record = session ? challenges.get(session.challengeId) : null;
     const replacement = pairing?.replacementPhoneId && pairing.session === token
       ? {pairingId: pairing.pairingId, expiresAt: pairing.expiresAt} : null;
-    return {authenticated, pending: Boolean(session && !authenticated), user: authenticated ? USER : null,
+    return {...(demoPhoneSetup ? {demoPhoneSetup: true} : {}), authenticated, pending: Boolean(session && !authenticated), user: authenticated ? USER : null,
       setup: session ? {phone: phoneStatus(), ...(replacement ? {replacement} : {})} : null, challenge: record?.challenge || null,
       challengeStatus: record?.status || null};
   }
@@ -491,7 +491,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
         const enrollment = pairing;
         const previousPhone = phone;
         if (enrollment.replacementPhoneId && (previousPhone?.id !== enrollment.replacementPhoneId
-            || sessions.get(enrollment.session)?.verifiedAt == null)) {
+            || (!demoPhoneSetup && sessions.get(enrollment.session)?.verifiedAt == null))) {
           fail(401, 'invalid_pairing', 'Pairing code expired or invalid');
         }
         let key;
@@ -503,7 +503,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
         sweep();
         if (pairing !== enrollment || enrollment.expiresAt <= now() || !sessions.has(enrollment.session)
             || (enrollment.replacementPhoneId && (phone !== previousPhone
-              || sessions.get(enrollment.session)?.verifiedAt == null))) {
+              || (!demoPhoneSetup && sessions.get(enrollment.session)?.verifiedAt == null)))) {
           fail(401, 'invalid_pairing', 'Pairing code expired or invalid');
         }
         const nextPhone = {id: randomUUID(), label: body.label.trim(), key, deviceToken: randomToken(), socket: null};
@@ -594,11 +594,12 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
         return;
       }
       if (req.method === 'POST' && ['/api/phones/replacement', '/api/phones/replacement/cancel'].includes(route)) {
-        requireAuthenticated(session);
+        if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
+        if (!demoPhoneSetup) requireAuthenticated(session);
         exactFields(await readJson(req), []);
         sweep();
         if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
-        requireAuthenticated(session);
+        if (!demoPhoneSetup) requireAuthenticated(session);
         if (route.endsWith('/cancel')) {
           if (pairing?.replacementPhoneId && pairing.session === session) clearPairing();
           json(res, 200, {ok: true});

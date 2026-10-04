@@ -311,7 +311,7 @@ function renderControls() {
     : ['reconnect', 'expired', 'cancelled', 'failed'].includes(state.phase) ? 'fail' : running ? 'loop' : 'rest');
   $('enrollment').hidden = !!phone;
   $('bluetooth-setup').hidden = !phone;
-  $('factor-status').hidden = !phone;
+  $('factor-status').hidden = !phone || !!session?.demoPhoneSetup;
   $('pairing').hidden = !pairing || !!phone;
   $('pairing-state').hidden = !pending || !!phone || !!pairing;
   $('pairing-state-spinner').hidden = pairingElsewhere;
@@ -342,7 +342,7 @@ function renderControls() {
   $('dashboard-replace-phone-button').disabled = !account || appBusy || replacementBusy;
   $('replace-phone-confirm').disabled = $('replace-phone-close').disabled = replacementBusy;
   $('replacement-refresh').disabled = $('replacement-cancel').disabled = replacementBusy;
-  replacementQr.render(account ? replacementPairing : null, replacementPairing?.origin || location.origin);
+  replacementQr.render(account || session?.demoPhoneSetup ? replacementPairing : null, replacementPairing?.origin || location.origin);
   $('app-save').firstChild.textContent = appBusy ? 'Saving app… ' : 'Save app ';
   renderDebug();
 }
@@ -360,7 +360,7 @@ function renderSession() {
     notice();
   }
   $('factor-title').textContent = phone ? 'Verify phone' : 'Connect your phone';
-  $('setup-phone-name').textContent = phoneLabel(phone?.label, 'Add your phone');
+  $('setup-phone-name').textContent = session?.demoPhoneSetup ? 'Connect your phone' : phoneLabel(phone?.label, 'Add your phone');
   $('phone-status').textContent = phone?.online ? 'Connected' : 'Offline';
   $('setup-phone-dot').style.opacity = phone?.online ? '1' : '.3';
   $('permission-description').textContent = phone?.online
@@ -464,6 +464,15 @@ async function poll(currentEpoch) {
       if (result.authenticated) await enterDashboard();
       else if (!result.pending) return flow.onSessionLost();
       else {
+        if (session.setup?.phone?.id && result.setup?.phone?.id !== session.setup.phone.id) {
+          flow.dispose();
+          bluetooth.forget();
+          autoAttempted = false;
+          replacementPairing = null;
+          replacementQr.clear();
+          $('replacement-qr-dialog').close();
+          notice('Your phone is connected. Verify it nearby to finish signing in.');
+        }
         session = result;
         renderSession();
         if (!session.setup?.phone && !pairing) void createPairing();
@@ -719,23 +728,25 @@ function openPairingChannel(pairingId, currentEpoch) {
 
 function openPhoneReplacement() {
   if (replacementBusy || (!account && !session?.setup?.phone)) return;
-  if (account && replacementPairing) return $('replacement-qr-dialog').showModal();
-  $('replace-phone-description').textContent = account
+  if ((account || session?.demoPhoneSetup) && replacementPairing) return $('replacement-qr-dialog').showModal();
+  $('replace-phone-description').textContent = session?.demoPhoneSetup
+    ? 'Scan this setup QR with your phone. Connecting it replaces the shared demo phone. Verify your new phone nearby to open the dashboard.'
+    : account
     ? 'Scan a setup QR code with your new phone. Your current phone stays enrolled until the new phone finishes enrollment. Then verify the new phone nearby.'
     : 'Verify your current phone first to approve this change. Then we’ll show a setup QR code for your new phone. Keep Nearkey open on your current phone.';
-  $('replace-phone-confirm').firstChild.textContent = account ? 'Show new phone QR code ' : 'Verify current phone first ';
+  $('replace-phone-confirm').firstChild.textContent = account || session?.demoPhoneSetup ? 'Show new phone QR code ' : 'Verify current phone first ';
   $('replace-phone-dialog').showModal();
 }
 
 async function startReplacement() {
-  if (!account || replacementBusy) return;
+  if ((!account && !session?.demoPhoneSetup) || replacementBusy) return;
   const currentEpoch = epoch;
   replacementBusy = true;
   accountRevision++;
   renderControls();
   try {
     const result = await api('/api/phones/replacement', {method: 'POST', body: {}, signal: lifetime.signal});
-    if (epoch !== currentEpoch || !account) return;
+    if (epoch !== currentEpoch || (!account && !session?.demoPhoneSetup)) return;
     replacementPairing = result;
     $('replace-phone-dialog').close();
     if (!$('replacement-qr-dialog').open) $('replacement-qr-dialog').showModal();
@@ -752,7 +763,7 @@ async function startReplacement() {
 }
 
 async function cancelReplacement() {
-  if (replacementBusy || !account) return;
+  if (replacementBusy || (!account && !session?.demoPhoneSetup)) return;
   const currentEpoch = epoch;
   replacementBusy = true;
   accountRevision++;
@@ -764,7 +775,7 @@ async function cancelReplacement() {
     replacementQr.clear();
     $('replacement-qr-dialog').close();
     notice('Phone change cancelled. Your current phone stays connected.');
-    $('dashboard-replace-phone-button').focus();
+    $(account ? 'dashboard-replace-phone-button' : 'replace-phone-button').focus();
   } catch (error) {
     if (epoch === currentEpoch) handleError(error);
   } finally {
@@ -781,7 +792,7 @@ $('replace-phone-dialog').addEventListener('cancel', event => {
 });
 $('replace-phone-confirm').addEventListener('click', () => {
   if (replacementBusy) return;
-  if (account) return void startReplacement();
+  if (account || session?.demoPhoneSetup) return void startReplacement();
   replacementRequested = true;
   $('replace-phone-dialog').close();
   notice('Verify your current phone first. The new phone QR code will open after verification.');

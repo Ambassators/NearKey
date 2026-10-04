@@ -10,7 +10,9 @@ A correct password opens a pending login. The provider dashboard and account API
 
 The browser has three pages: `#/login` for password or fake Google sign-in, `#/loading` for phone enrollment and Bluetooth authentication, and `#/dashboard` for the verified account and app list. Refreshing resumes the server-confirmed step; changing the route cannot skip verification.
 
-“Connect a different phone” is available during verification and on the dashboard. A pending login must verify the current phone first; a verified session can generate a replacement QR immediately. The current phone stays enrolled until the new phone completes enrollment with a valid key proof. Refreshing or cancelling the QR does not remove it. Completing replacement revokes the old phone and other browser sessions, preserves the app list, and requires nearby verification of the new phone before reopening the dashboard. A lost current phone still requires offline demo recovery; the button cannot bypass the existing second factor.
+“Connect a different phone” lets a signed-in demo visitor show a new setup QR without verifying the previous demo phone. Setup hides the shared phone’s device card and uses a generic device label. The old phone stays enrolled until the new phone completes enrollment with a valid key proof; then its credential and other browser sessions are revoked. The new phone must still complete Bluetooth verification before the dashboard opens. This is a shared demo: one visitor replacing the phone interrupts other visitors.
+
+Demo phone setup is enabled by default in the local and hosted entry points. Set `DEMO_PHONE_SETUP=false` to require current-phone verification before replacement. This relaxed setup policy is for demo accounts only.
 
 ## Demo scope
 

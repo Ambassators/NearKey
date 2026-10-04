@@ -1063,3 +1063,26 @@ test('local demo reset removes durable enrollment and invalidates sessions and p
   const cookie = await f.login();
   assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).status, 200);
 });
+
+
+test('demo phone setup allows pending visitors to replace a phone while dashboard stays locked', async (t) => {
+  const f = await fixture(t, {demoPhoneSetup: true});
+  const old = await f.enrolled();
+  const cookie = await f.login();
+  const replace = (cookie) => f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie});
+  assert.equal((await replace()).status, 401);
+  const state = (await f.request('/api/session', {cookie})).data;
+  assert.equal(state.demoPhoneSetup, true);
+  assert.equal(state.setup.phone.label, 'Demo phone');
+  const ticket = await replace(cookie);
+  assert.equal(ticket.status, 200);
+  assert.equal((await f.request('/api/account', {cookie})).status, 403);
+  const next = replacementEnrollment(ticket.data);
+  const enrolled = await f.request('/api/phones/enroll', {method: 'POST', body: next.body});
+  assert.equal(enrolled.status, 200);
+  assert.equal((await f.request('/api/account', {cookie})).status, 403);
+  assert.equal((await f.request('/api/session', {cookie: old.cookie})).data.pending, false);
+  const phone = {cookie, pair: next.pair, ...enrolled.data, ...await f.connect(enrolled.data.deviceToken)};
+  await f.complete(phone, await f.challenge(phone));
+  assert.equal((await f.request('/api/account', {cookie})).status, 200);
+});

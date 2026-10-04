@@ -12,6 +12,7 @@ const publicOrigin = process.env.PUBLIC_ORIGIN || `http://localhost:${port}`;
 const phoneOrigin = process.env.PHONE_ORIGIN || (wifi ? `http://${wifiAddress()}:${port}` : publicOrigin);
 const app = await createApp({
   publicOrigin, phoneOrigin, pairingFile,
+  demoPhoneSetup: process.env.DEMO_PHONE_SETUP !== 'false',
   username: process.env.DEMO_USERNAME || 'admin',
   password: process.env.DEMO_PASSWORD || 'mint-river-otter-47',
 });
