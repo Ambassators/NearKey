@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#143d32">
+  <title>Nearkey — a fictional bank</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <script type="module" src="/web/app.mjs"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true">n.</span> nearkey<span class="brand-note">BANK DEMO</span></a>
+    <div class="top-actions"><span class="demo-tag">Fictional money. Real phone key.</span><button id="logout" class="quiet" hidden>Sign out</button></div>
+  </header>
+  <main>
+    <p id="notice" class="notice" role="status" hidden></p>
+    <section id="login-view" class="login-layout">
+      <div class="intro"><p class="eyebrow">LESS FRICTION. SAME YOU.</p><h1>Your phone.<br>Your key.<br><span>Just nearby.</span></h1><p>Sign in with a password. Then let your enrolled Android phone sign a transfer over Bluetooth — without a code or a confirmation tap.</p><div class="intro-foot">01 Password &nbsp; / &nbsp; 02 Nearby phone &nbsp; / &nbsp; 03 Done</div></div>
+      <section class="card login-card" aria-labelledby="login-title"><p class="eyebrow">WELCOME TO THE DEMO</p><h2 id="login-title">Sign in</h2><form id="login-form">
+        <label for="username">Username</label><input id="username" name="username" autocomplete="username" value="demo" required>
+        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button id="login-button" class="primary" type="submit">Sign in to Nearkey <span aria-hidden="true">↗</span></button>
+      </form><p class="fineprint">Demo fixture: <code>demo</code> / <code>demo-passive-key</code>. The server may override these credentials.</p><p class="fineprint">Use MacBook Chromium and a foreground native Android app. No real accounts or payments.</p></section>
+    </section>
+    <div id="bank-view" hidden>
+      <div class="page-heading"><div><p class="eyebrow">YOUR EVERYDAY ACCOUNT</p><h1>Hello, <span id="user-name"></span>.</h1></div><span class="account-tag">FICTIONAL CHECKING · 0001</span></div>
+      <div class="bank-grid">
+        <aside>
+          <section class="balance-card"><p>Available balance</p><div id="balance" class="balance">—</div><div class="balance-foot"><span>USD · demo funds</span><span aria-hidden="true">↗</span></div></section>
+          <section class="card phone-card" aria-labelledby="phone-title"><div class="section-top"><h2 id="phone-title">Your phone key</h2><span id="phone-status" class="badge">Not enrolled</span></div><p id="phone-description" class="muted"></p><p id="bluetooth-problem" class="notice" hidden></p>
+            <div id="enrollment"><ol class="steps"><li>Open the native Android app in the foreground.</li><li>Paste the enrollment code and the reachable bank base URL.</li><li>Start the phone’s setup advertisement, then choose it here.</li></ol><button id="pair-button" class="primary">Get enrollment code</button>
+              <div id="pairing" class="pairing" hidden><p class="eyebrow">ENROLLMENT ONLY · NOT A TRANSFER CODE</p><label for="pair-code">Paste this code into the Android app</label><input id="pair-code" readonly spellcheck="false"><label for="base-url">Bank base URL</label><input id="base-url" readonly spellcheck="false"><p id="pair-time" class="fineprint"></p><p class="fineprint">The phone must reach this same bank. On a phone, localhost points to the phone itself: use the deployment’s reachable HTTPS base URL, configured by the server owner.</p></div>
+            </div>
+            <div id="bluetooth-setup" hidden><p id="permission-description" class="muted"></p><button id="choose-button" class="primary">Choose phone / Enable Bluetooth 2FA</button><p class="fineprint">Chooser permission is separate from enrollment. Keep the phone app open and start its setup advertisement before choosing.</p></div>
+          </section>
+          <p class="fineprint aside-note">Hackathon demo: account, pairing and enrollment reset when the server restarts. To re-enroll, the operator resets server state offline; there is no password-only phone replacement.</p>
+        </aside>
+        <div class="main-column">
+          <section id="transfer-panel" class="card transfer-card" aria-labelledby="transfer-title"><p class="eyebrow">MOVE FICTIONAL MONEY</p><h2 id="transfer-title">Send a transfer</h2><p id="transfer-help" class="muted"></p><form id="transfer-form">
+            <label for="recipient">To</label><select id="recipient" name="recipientId" required></select>
+            <label for="amount">Amount in USD</label><div class="amount-input"><span aria-hidden="true">$</span><input id="amount" name="amount" inputmode="decimal" placeholder="25.00" pattern="[0-9]+([.][0-9]{1,2})?" required aria-label="Amount in US dollars"></div>
+            <label for="note">Note <span class="optional">optional</span></label><input id="note" name="note" maxlength="120" placeholder="What’s it for?">
+            <button id="transfer-button" class="primary" type="submit">Start Bluetooth transfer <span aria-hidden="true">↗</span></button><p class="fineprint">The bank fixes the recipient, amount and note before asking your phone to sign. No edits during the handshake.</p>
+          </form></section>
+          <section id="challenge-panel" class="card challenge-card" aria-labelledby="challenge-title" hidden><div class="section-top"><p id="challenge-kicker" class="eyebrow">PASSIVE PHONE SIGNATURE</p><span id="countdown" class="timer"></span></div><h2 id="challenge-title">Waiting for Bluetooth handshake</h2><p id="challenge-message" class="muted" role="status"></p><dl class="transaction-details"><div><dt>Recipient</dt><dd id="challenge-recipient"></dd></div><div><dt>Amount</dt><dd id="challenge-amount"></dd></div><div><dt>Note</dt><dd id="challenge-note" class="preserve"></dd></div></dl><p id="delivery-status" class="fineprint"></p><details class="wire-details"><summary>Exact server challenge</summary><dl><dt>Version</dt><dd id="challenge-version"></dd><dt>Challenge ID</dt><dd id="challenge-id"></dd><dt>Phone ID</dt><dd id="challenge-phone"></dd><dt>Nonce</dt><dd id="challenge-nonce"></dd><dt>Recipient ID</dt><dd id="challenge-recipient-id"></dd><dt>Amount in cents</dt><dd id="challenge-cents"></dd><dt>Expires at</dt><dd id="challenge-expires"></dd></dl></details><div class="challenge-actions"><button id="reconnect-button" class="primary" hidden>Choose / reconnect phone</button><button id="cancel-button" class="secondary">Cancel transfer</button><button id="new-transfer-button" class="primary" hidden>New transfer</button></div><div id="receipt" class="receipt" hidden><p class="eyebrow">BANK RECEIPT</p><p id="receipt-details"></p><code id="receipt-id"></code></div></section>
+          <section class="card activity-card"><div class="section-top"><h2>Recent transfers</h2><span class="subtle">Server ledger</span></div><ul id="transactions" class="activity-list"></ul><p id="no-transactions" class="muted">No transfers yet. Your first one starts here.</p></section>
+        </div>
+      </div>
+    </div>
+  </main>
+  <footer>NEARKEY / PASSIVE HARDWARE KEY <span>Demo only · Bluetooth permission is always yours.</span></footer>
+</body>
+</html>
