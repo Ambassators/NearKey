@@ -32,6 +32,7 @@ function resetLifetime() {
   lifetime.abort(new Error('Page session changed.'));
   lifetime = new AbortController();
   clearTimeout(accountTimer);
+  accountTimer = null;
   flow.dispose();
   pairing = null;
   pairBusy = transferBusy = chooserBusy = false;
@@ -39,7 +40,12 @@ function resetLifetime() {
 
 function signOutLocally() {
   resetLifetime();
+  loginBusy = false;
   account = null;
+  $('pair-code').value = '';
+  $('base-url').value = '';
+  $('pair-time').textContent = '';
+  $('pairing').hidden = true;
   $('bank-view').hidden = true;
   $('logout').hidden = true;
   $('login-view').hidden = false;
@@ -54,9 +60,9 @@ function renderControls() {
   const problem = bluetooth.availability();
   $('login-button').disabled = loginBusy;
   $('login-button').textContent = loginBusy ? 'Signing in…' : 'Sign in to Nearkey ↗';
-  $('pair-button').disabled = pairBusy;
+  $('pair-button').disabled = pairBusy || !account || !!account.phone;
   $('pair-button').textContent = pairBusy ? 'Creating enrollment code…' : pairing ? 'Get a fresh enrollment code' : 'Get enrollment code';
-  $('choose-button').disabled = chooserBusy || running || bluetooth.busy;
+  $('choose-button').disabled = chooserBusy || running || bluetooth.busy || !account?.phone || !!problem;
   $('choose-button').textContent = chooserBusy ? 'Waiting for the Bluetooth chooser…' : bluetooth.deviceId
     ? 'Choose / reconnect phone' : 'Choose phone / Enable Bluetooth 2FA';
   $('transfer-button').disabled = transferBusy || inChallenge || !account?.phone?.online || !bluetooth.deviceId || !!problem || chooserBusy || bluetooth.busy;
@@ -75,7 +81,7 @@ function renderControls() {
     : problem || (!bluetooth.deviceId ? 'Choose your enrolled phone to enable browser Bluetooth permission.'
       : !account.phone.online ? 'Open your phone app and reconnect it to the bank before starting.'
         : 'Your phone is online. Start a transfer and keep its app nearby in the foreground.');
-  $('permission-description').textContent = !bluetooth.deviceId ? 'One explicit chooser click enables Bluetooth access for this browser.'
+  $('permission-description').textContent = !bluetooth.deviceId ? 'Keep Bluetooth enabled and the native Android app in the foreground. Tap “Advertise setup for 60 seconds” on the phone, then choose it here to grant this browser Bluetooth access. This permission is separate from phone enrollment.'
     : bluetooth.bluetooth?.getDevices
       ? 'A phone ID is remembered by this browser. Transfers try its permitted device automatically, then offer a chooser if unavailable.'
       : 'This browser cannot retrieve saved devices automatically. Choose / reconnect after each page reload. This page can reuse your current selection.';
@@ -89,9 +95,16 @@ function renderAccount() {
   $('phone-status').classList.toggle('online', account.phone?.online === true);
   $('phone-description').textContent = account.phone
     ? `${account.phone.label} · ${account.phone.online ? 'Connected to the bank. Keep the Android app in the foreground.' : 'Open the Android app to connect its authenticated phone channel.'}`
-    : 'Enroll one Android phone. Its non-exportable Keystore key signs only pending bank challenges.';
+    : 'Open the native Android app with Bluetooth already enabled. Paste a fresh enrollment code and the reachable HTTPS bank URL, then tap “Enroll phone”. Its non-exportable Keystore key signs only pending bank challenges.';
   $('enrollment').hidden = !!account.phone;
-  if (account.phone) pairing = null;
+  if (account.phone) {
+    const enrollmentDetected = !!pairing;
+    pairing = null;
+    $('pair-code').value = '';
+    $('base-url').value = '';
+    $('pair-time').textContent = '';
+    if (enrollmentDetected) notice('Phone enrolled. Keep its app open, tap “Advertise setup for 60 seconds”, then choose the phone here to enable browser Bluetooth access.');
+  }
   $('pairing').hidden = !pairing || !!account.phone;
   if (pairing) {
     $('pair-code').value = pairing.pairingCode;
@@ -130,10 +143,12 @@ function renderAccount() {
 }
 
 async function pollAccount(currentEpoch) {
+  if (epoch !== currentEpoch || !account) return;
   try {
     const result = await api('/api/account', {signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
     account = result;
+    if ($('notice').textContent.endsWith(' Account status will retry shortly.')) notice();
     renderAccount();
   } catch (error) {
     if (epoch !== currentEpoch) return;
@@ -211,25 +226,29 @@ function tick() {
 
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (loginBusy) return;
+  if (loginBusy || account) return;
   loginBusy = true;
-  const currentEpoch = epoch;
+  let currentEpoch = epoch;
   notice();
   renderControls();
   try {
     await api('/api/login', {method: 'POST', body: {username: $('username').value, password: $('password').value}, signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
-    await enterBank();
+    const entering = enterBank();
+    currentEpoch = epoch;
+    await entering;
   } catch (error) {
-    // enterBank increments the lifetime; a failed account request still needs a visible error.
-    if (!account) notice(error.message);
+    if (epoch === currentEpoch && !account) notice(error.message);
   } finally {
-    loginBusy = false;
-    renderControls();
+    if (epoch === currentEpoch) {
+      loginBusy = false;
+      renderControls();
+    }
   }
 });
 
 $('logout').addEventListener('click', async () => {
+  if (!account || loginBusy) return;
   signOutLocally();
   const currentEpoch = epoch;
   loginBusy = true;
@@ -247,7 +266,7 @@ $('logout').addEventListener('click', async () => {
 });
 
 $('pair-button').addEventListener('click', async () => {
-  if (pairBusy || account?.phone) return;
+  if (pairBusy || !account || account.phone) return;
   const currentEpoch = epoch;
   pairBusy = true;
   notice();
@@ -255,11 +274,18 @@ $('pair-button').addEventListener('click', async () => {
   try {
     const result = await api('/api/pairing', {method: 'POST', body: {}, signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
+    // Enrollment may have been detected by the account poll while this request ran.
+    if (account?.phone) return;
     pairing = result;
+    notice('Paste this enrollment code and the bank URL into the native Android app, then tap “Enroll phone”. Keep Bluetooth enabled and the app open; this page checks enrollment automatically.');
     renderAccount();
     tick();
   } catch (error) {
-    if (epoch === currentEpoch) notice(error.message);
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401) {
+      signOutLocally();
+      notice('Your session ended. Sign in again.');
+    } else notice(error.message);
   } finally {
     if (epoch === currentEpoch) pairBusy = false;
     renderControls();
@@ -267,7 +293,7 @@ $('pair-button').addEventListener('click', async () => {
 });
 
 $('choose-button').addEventListener('click', async () => {
-  if (chooserBusy || flow.run) return;
+  if (chooserBusy || flow.run || bluetooth.busy || !account?.phone) return;
   const currentEpoch = epoch;
   chooserBusy = true;
   renderControls();
@@ -327,16 +353,22 @@ window.addEventListener('pageshow', event => { if (event.persisted) location.rel
 async function boot() {
   loginBusy = true;
   renderControls();
-  const currentEpoch = epoch;
+  let currentEpoch = epoch;
   try {
     const session = await api('/api/session', {signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
-    if (session.authenticated) await enterBank();
+    if (session.authenticated) {
+      const entering = enterBank();
+      currentEpoch = epoch;
+      await entering;
+    }
   } catch (error) {
-    if (!account) notice(error.message);
+    if (epoch === currentEpoch && !account) notice(error.message);
   } finally {
-    loginBusy = false;
-    renderControls();
+    if (epoch === currentEpoch) {
+      loginBusy = false;
+      renderControls();
+    }
   }
 }
 void boot();
