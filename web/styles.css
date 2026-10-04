@@ -239,6 +239,7 @@ input[readonly] { background: #f7f9f5; }
 .android-download { width: min(100%, 520px); margin: 0 auto; padding: 20px 24px 28px; border-top: 1px solid var(--line); text-align: center; }
 .android-download a { display: inline-flex; align-items: center; gap: 12px; color: var(--ink); font-size: 14px; font-weight: 600; text-underline-offset: 4px; }
 .android-download p { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.setup-download { width: 100%; margin: 16px 0; padding: 12px 0; border-top: 0; text-align: left; }
 .social-button {
   display: grid;
   grid-template-columns: 20px 1fr 20px;
