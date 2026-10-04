@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "fluid": true,
+  "buildCommand": "npm test",
+  "installCommand": "npm ci",
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 300,
+      "includeFiles": "{web,shared}/**"
+    }
+  },
+  "rewrites": [{"source": "/(.*)", "destination": "/api/index"}]
+}

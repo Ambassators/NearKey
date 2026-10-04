@@ -238,20 +238,39 @@ async function resumeSetup() {
   }
 }
 
+// The homepage is a presentation route: it never changes session state, and its
+// animations load lazily so a missing module cannot affect sign-in.
+const homeRoutes = new Set(['', '#', '#/', '#/home', '#how-it-works', '#security', '#phone']);
+let homepage = null;
+function syncHomepage(visible) {
+  if (visible && !homepage) {
+    homepage = import('./home.mjs').then(({Homepage}) => new Homepage($('home-view'))).catch(() => null);
+  }
+  homepage?.then(page => page?.[visible ? 'show' : 'hide']());
+}
+
 // Routes describe server-confirmed access; changing a URL never grants a factor.
 function renderPage(pending) {
-  const page = restoringSession ? 'loading' : account ? 'dashboard' : pending ? 'loading' : 'login';
-  $('signin-stage').hidden = page === 'dashboard';
+  const page = homeRoutes.has(location.hash) ? 'home'
+    : restoringSession ? 'loading' : account ? 'dashboard' : pending ? 'loading' : 'login';
+  $('home-view').hidden = page !== 'home';
+  $('home-nav').hidden = page !== 'home';
+  $('home-cta').hidden = page !== 'home';
+  $('home-cta').firstChild.textContent = account ? 'Open your apps ' : 'Try the demo ';
+  $('topbar').dataset.page = page;
+  $('signin-stage').hidden = page === 'dashboard' || page === 'home';
   $('login-view').hidden = page !== 'login';
   $('auth-view').hidden = page !== 'loading';
   $('dashboard-view').hidden = page !== 'dashboard';
-  document.title = `Nearkey — ${page === 'login' ? 'Sign in' : page === 'loading' ? 'Phone setup' : 'Your apps'}`;
-  if (!restoringSession) {
+  document.title = page === 'home' ? 'Nearkey — your phone, your second factor'
+    : `Nearkey — ${page === 'login' ? 'Sign in' : page === 'loading' ? 'Phone setup' : 'Your apps'}`;
+  if (!restoringSession && page !== 'home') {
     // Dashboard section anchors remain available once both factors are verified.
-    const section = page === 'dashboard' && ['#overview', '#activity', '#how-it-works'].includes(location.hash);
+    const section = page === 'dashboard' && location.hash === '#overview';
     const route = `#/${page}`;
     if (!section && location.hash !== route) history.replaceState(null, '', `${location.pathname}${location.search}${route}`);
   }
+  syncHomepage(page === 'home');
   const state = flow.state;
   const phone = session?.setup?.phone;
   $('auth-view').dataset.stage = restoringSession ? 'restoring' : state?.phase || 'setup';
@@ -259,8 +278,11 @@ function renderPage(pending) {
   $('session-loading').hidden = !restoringSession;
   $('wizard-layout')?.setAttribute('aria-busy', String(restoringSession));
   if (visiblePage !== page) {
+    // Leaving or entering the long homepage starts the next page at its top.
+    if (visiblePage !== null && (visiblePage === 'home' || page === 'home')) window.scrollTo?.(0, 0);
     visiblePage = page;
-    $(page === 'login' ? 'login-title' : page === 'loading' ? 'auth-page-title' : 'dashboard-title').focus({preventScroll: true});
+    $(page === 'home' ? 'home-title' : page === 'login' ? 'login-title' : page === 'loading' ? 'auth-page-title' : 'dashboard-title')
+      .focus({preventScroll: true});
   }
 }
 
@@ -272,7 +294,7 @@ function renderControls() {
   const problem = bluetooth.availability();
   const pending = session?.pending === true;
   renderPage(pending);
-  $('logout').hidden = !account;
+  $('logout').hidden = !account || visiblePage === 'home';
   $('back-to-login').disabled = loginBusy;
   $('credentials-panel').hidden = pending;
   $('factor-panel').hidden = !pending;

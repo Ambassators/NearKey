@@ -5,9 +5,11 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { approvalText, enrollmentText, CONTRACT_VERSION, CHALLENGE_TTL_MS } from '../shared/protocol.mjs';
-import { randomToken, parsePublicKey, verifyProof, passwordRecord, passwordMatches } from './crypto.mjs';
+import { randomToken, decodeBase64url, parsePublicKey, verifyProof, passwordRecord, passwordMatches } from './crypto.mjs';
 import { validatePhoneOrigin } from './network.mjs';
 import { phoneStore } from './phone-store.mjs';
+import { StorageError, bufferedResponse } from './shared-store.mjs';
+import { SharedChannels } from './shared-channels.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SESSION_TTL_MS = 8 * 60 * 60_000;
@@ -169,7 +171,8 @@ async function staticFiles(root) {
 }
 
 export async function createApp({publicOrigin = 'http://localhost:5173', phoneOrigin = publicOrigin, username = 'admin',
-  password = 'mint-river-otter-47', now = Date.now, root = ROOT, pairingFile = null} = {}) {
+  password = 'mint-river-otter-47', now = Date.now, root = ROOT, pairingFile = null, stateStore = null, channelPollMs = 2000} = {}) {
+  if (stateStore && pairingFile) throw new Error('Choose shared storage or a local pairing file');
   validateOrigin(publicOrigin);
   validatePhoneOrigin(phoneOrigin);
   if (typeof username !== 'string' || !username.trim() || username.length > 80 || /[\r\n]/.test(username)) {
@@ -188,6 +191,90 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
   // These are saved account app entries, not credentials or live integrations.
   const apps = [];
   let closing = false;
+  let transactionQueue = Promise.resolve();
+  const channels = stateStore ? new SharedChannels({now, transact: withState, sweep,
+    disconnected: disconnectChannel, pollMs: channelPollMs}) : null;
+
+  function restoreState(saved) {
+    if (saved !== null && (saved.version !== 1 || saved.username !== username || saved.publicOrigin !== publicOrigin
+        || !Array.isArray(saved.sessions) || !Array.isArray(saved.challenges) || !Array.isArray(saved.rates)
+        || !Array.isArray(saved.activity) || !Array.isArray(saved.apps) || !Array.isArray(saved.channels)
+        || !Object.hasOwn(saved, 'phone') || !Object.hasOwn(saved, 'pairing') || !Object.hasOwn(saved, 'activeId')
+        || (saved.phone !== null && (typeof saved.phone !== 'object' || Array.isArray(saved.phone)))
+        || (saved.pairing !== null && (typeof saved.pairing !== 'object' || Array.isArray(saved.pairing)))
+        || (saved.activeId !== null && typeof saved.activeId !== 'string'))) {
+      throw new StorageError('Shared state belongs to a different account or origin; use a separate state key');
+    }
+    for (const entries of [saved?.sessions, saved?.challenges, saved?.rates]) {
+      if (entries && (entries.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string'
+          || !entry[1] || typeof entry[1] !== 'object') || new Set(entries.map(([key]) => key)).size !== entries.length)) {
+        throw new StorageError('Saved state records are invalid');
+      }
+    }
+    channels.restore(saved?.channels);
+    for (const [map, entries] of [[sessions, saved?.sessions], [challenges, saved?.challenges], [rates, saved?.rates]]) {
+      map.clear();
+      for (const [key, value] of entries || []) map.set(key, value);
+    }
+    if (sessions.size > 16 || challenges.size > 100 || rates.size > 1024
+        || (saved?.apps.length || 0) > APP_LIMIT || (saved?.activity.length || 0) > 1000) {
+      throw new StorageError('Saved shared state exceeds account limits');
+    }
+    for (const [token, session] of sessions) {
+      try { decodeBase64url(token, 32, 32); decodeBase64url(session.id, 32, 32); }
+      catch { throw new StorageError('Saved session is invalid'); }
+      if (typeof session.id !== 'string' || !Number.isFinite(session.expiresAt)
+          || (session.verifiedAt !== null && !Number.isFinite(session.verifiedAt))) throw new StorageError('Saved session is invalid');
+    }
+    pairing = saved?.pairing ? {...saved.pairing, socket: channels.proxy(saved.pairing.socketId)} : null;
+    if (pairing && (!Number.isFinite(pairing.expiresAt) || typeof pairing.pairingId !== 'string'
+        || typeof pairing.pairingCode !== 'string' || !sessions.has(pairing.session))) throw new StorageError('Saved pairing is invalid');
+    try {
+      if (saved?.phone) {
+        const entry = saved.phone;
+        if (typeof entry.id !== 'string' || !/^[a-f0-9-]{36}$/.test(entry.id)
+            || typeof entry.label !== 'string' || !entry.label.trim() || entry.label.length > 40) throw new Error();
+        decodeBase64url(entry.deviceToken, 32, 32);
+      }
+      phone = saved?.phone ? {...saved.phone, key: parsePublicKey(saved.phone.publicKey), socket: channels.proxy(saved.phone.socketId)} : null;
+    } catch { throw new StorageError('Saved phone key is invalid'); }
+    for (const [id, record] of challenges) {
+      if (!record.challenge || record.challenge.id !== id || !Number.isFinite(record.challenge.expiresAt)
+          || !['waiting_phone', 'waiting_bluetooth', 'approved', 'expired', 'cancelled'].includes(record.status)
+          || typeof record.session !== 'string' || typeof record.phoneReady !== 'boolean') throw new StorageError('Saved challenge is invalid');
+    }
+    for (const rate of rates.values()) if (!Number.isFinite(rate.until) || !Number.isFinite(rate.count)) throw new StorageError('Saved rate limit is invalid');
+    activeId = saved?.activeId || null;
+    activity.splice(0, activity.length, ...(saved?.activity || []));
+    apps.splice(0, apps.length, ...(saved?.apps || []));
+  }
+  function snapshotState() {
+    const savedPairing = pairing ? {...pairing, socketId: pairing.socket?.id || null} : null;
+    if (savedPairing) delete savedPairing.socket;
+    return {version: 1, username, publicOrigin, sessions: [...sessions], challenges: [...challenges], rates: [...rates],
+      pairing: savedPairing, phone: phone ? {id: phone.id, label: phone.label, deviceToken: phone.deviceToken,
+        publicKey: phone.key.export({format: 'der', type: 'spki'}).toString('base64url'), socketId: phone.socket?.id || null} : null,
+      activeId, activity, apps, channels: channels.snapshot()};
+  }
+  function withState(operation) {
+    const run = transactionQueue.then(() => stateStore.transact(async (saved) => {
+      restoreState(saved);
+      sweep();
+      let value, error;
+      try { value = await operation(); } catch (caught) { error = caught; }
+      return {state: snapshotState(), value: {value, error}};
+    })).then(({value, error}) => { if (error) throw error; return value; });
+    transactionQueue = run.catch(() => {});
+    return run;
+  }
+  function disconnectChannel(id) {
+    if (phone?.socket?.id === id) {
+      phone.socket = null;
+      const record = challenges.get(activeId);
+      if (pending(record)) { record.phoneReady = false; record.status = 'waiting_phone'; }
+    }
+    if (pairing?.socket?.id === id) clearPairing();
+  }
 
   const cookie = (token = '', {sessionOnly = false} = {}) => `nearkey_session=${token}; Path=/; HttpOnly; SameSite=Strict${sessionOnly && token ? '' : `; Max-Age=${token ? SESSION_TTL_MS / 1000 : 0}`}${publicOrigin.startsWith('https:') ? '; Secure' : ''}`;
   function sendPhone(message, socket = phone?.socket) {
@@ -220,8 +307,13 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
     const time = now();
     // A page-owned code remains live only while its browser connection is open.
     if (pairing?.pageScoped && pairing.socket?.readyState === WebSocket.OPEN) {
+      if (channels) pairing.expiresAt = channels.records.get(pairing.socket.id).expiresAt;
       const login = sessions.get(pairing.session);
       if (login?.verifiedAt === null) login.expiresAt = time + PENDING_SESSION_TTL_MS;
+    }
+    if (channels) {
+      if (phone?.socket && phone.socket.readyState !== WebSocket.OPEN) disconnectChannel(phone.socket.id);
+      if (pairing?.socket && pairing.socket.readyState !== WebSocket.OPEN) disconnectChannel(pairing.socket.id);
     }
     for (const [token, session] of sessions) if (session.expiresAt <= time) revokeSession(token);
     if (pairing?.expiresAt <= time) clearPairing();
@@ -233,7 +325,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
     for (const [key, rate] of rates) if (rate.until <= time) rates.delete(key);
   }
   function rateLimit(req, category, limit) {
-    const key = `${category}:${req.socket.remoteAddress}`;
+    const key = `${category}:${stateStore ? 'shared-account' : req.socket.remoteAddress}`;
     let rate = rates.get(key);
     if (!rate) {
       if (rates.size >= 1024) fail(429, 'rate_limited', 'Please retry later');
@@ -293,13 +385,11 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
     if (!pending(record)) fail(409, 'challenge_not_pending', `Challenge is ${record.status}`);
   }
 
-  const server = http.createServer({maxHeaderSize: 8192, requestTimeout: 15_000,
-    headersTimeout: 10_000, keepAliveTimeout: 5000}, async (req, res) => {
+  async function handleRequest(req, res, stateful = true) {
     // Aborted uploads can emit an error after body-reader listeners are cleaned up.
     req.on('error', () => {});
     try {
-      sweep();
-      rateLimit(req, 'http', 240);
+      if (stateful) { sweep(); rateLimit(req, 'http', 240); }
       // Both browser fetch and native OkHttp send origin-form request targets.
       // Check the raw target before URL parsing can discard fragments or controls.
       if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//')
@@ -603,11 +693,25 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
         req.resume();
       }
     }
+  }
+  const server = http.createServer({maxHeaderSize: 8192, requestTimeout: 15_000,
+    headersTimeout: 10_000, keepAliveTimeout: 5000}, async (req, res) => {
+    if (!stateStore) return handleRequest(req, res);
+    if (req.method === 'GET' && assets.has(req.url)) return handleRequest(req, res, false);
+    const buffered = bufferedResponse();
+    try {
+      await withState(() => handleRequest(req, buffered));
+      buffered.flush(res);
+    } catch {
+      json(res, 503, {error: 'storage_unavailable', message: 'Shared storage is unavailable; retry shortly'}, {'Retry-After': '5'});
+      req.resume();
+    }
   });
 
   const wss = new WebSocketServer({noServer: true, maxPayload: 2048, perMessageDeflate: false});
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => {});
+    if (stateStore) { void sharedUpgrade(req, socket, head); return; }
     try {
       if (closing) fail(503, 'server_closing', 'Server is shutting down');
       sweep();
@@ -685,25 +789,93 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
       socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`, () => socket.destroy());
     }
   });
-  const expiryTimer = setInterval(sweep, 1000);
+  async function sharedUpgrade(req, socket, head) {
+    let channel;
+    try {
+      if (closing) fail(503, 'server_closing', 'Server is shutting down');
+      let kind;
+      await withState(() => {
+        rateLimit(req, 'upgrade', 20);
+        if (/^\/api\/pairing-channel\/[0-9a-f-]{36}$/.test(req.url)) {
+          sameOrigin(req, true);
+          const session = requireSession(req);
+          if (!pairing?.pageScoped || pairing.pairingId !== req.url.slice('/api/pairing-channel/'.length)
+              || pairing.session !== session) fail(401, 'invalid_pairing', 'Pairing page is no longer active');
+          if (pairing.socket?.readyState === WebSocket.OPEN) fail(409, 'channel_exists', 'Pairing page is already connected');
+          channel = channels.create();
+          pairing.socket = channel;
+          pairing.expiresAt = channels.records.get(channel.id).expiresAt;
+          channel.send(JSON.stringify({type: 'pairing_ready'}));
+          kind = 'pairing';
+        } else {
+          if (req.url !== '/api/phone-channel' || req.headers.origin !== undefined) fail(403, 'channel_rejected', 'Native phone channel only');
+          const owner = requirePhone(req);
+          channel = channels.create();
+          owner.socket?.close(1000, 'Channel replaced');
+          owner.socket = channel;
+          sendPhone({type: 'ready', phoneId: owner.id});
+          const record = challenges.get(activeId);
+          if (pending(record)) {
+            record.phoneReady = false;
+            record.status = 'waiting_phone';
+            sendPhone({type: 'challenge', challenge: record.challenge});
+          }
+          kind = 'phone';
+        }
+      });
+      // The upgrade and its messages become visible only after the shared commit.
+      if (socket.destroyed) throw new Error('Upgrade disconnected');
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        ws.alive = true;
+        ws.on('error', () => {});
+        ws.on('pong', () => { ws.alive = true; });
+        ws.on('message', (data, binary) => {
+          let message;
+          try { message = JSON.parse(data.toString('utf8')); } catch { ws.close(1008, 'Invalid message'); return; }
+          if (kind !== 'phone' || binary || !message || Array.isArray(message)
+              || message.type !== 'ping' || Object.keys(message).length !== 1) {
+            ws.close(1008, 'Only ping is supported'); return;
+          }
+          ws.messageCount = (ws.messageCount || 0) + 1;
+          if (ws.messageCount > 60) ws.close(1008, 'Too many messages');
+        });
+        // Reconnect before Vercel's five-minute function deadline.
+        const rotation = setTimeout(() => ws.close(1012, 'Reconnect channel'), 280_000);
+        rotation.unref();
+        ws.once('close', () => clearTimeout(rotation));
+        channels.attach(channel, ws, kind);
+      });
+    } catch (error) {
+      if (channel) void withState(() => { disconnectChannel(channel.id); channels.records.delete(channel.id); }).catch(() => {});
+      const known = error instanceof ApiError;
+      const status = known ? error.status : 503;
+      const body = JSON.stringify({error: known ? error.error : 'storage_unavailable', message: known ? error.message : 'Channel unavailable; retry shortly'});
+      socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`, () => socket.destroy());
+    }
+  }
+  const expiryTimer = stateStore ? null : setInterval(sweep, 1000);
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
       if (ws.readyState !== WebSocket.OPEN) continue;
-      if (!ws.alive || (phone?.socket !== ws && pairing?.socket !== ws)) { ws.terminate(); continue; }
+      if (!ws.alive || (!stateStore && phone?.socket !== ws && pairing?.socket !== ws)) { ws.terminate(); continue; }
       ws.alive = false;
       ws.messageCount = 0;
       try { ws.ping(); } catch { ws.terminate(); }
     }
   }, 30_000);
-  expiryTimer.unref();
+  expiryTimer?.unref();
   heartbeat.unref();
-  server.on('close', () => { clearInterval(expiryTimer); clearInterval(heartbeat); });
+  server.on('close', () => { channels?.stop(); clearInterval(expiryTimer); clearInterval(heartbeat); });
 
   return {
     server,
     async close() {
       if (closing) return;
       closing = true;
+      channels?.stop();
+      if (channels) await withState(() => {
+        for (const id of channels.local.keys()) { disconnectChannel(id); channels.records.delete(id); }
+      }).catch(() => {});
       clearInterval(expiryTimer);
       clearInterval(heartbeat);
       for (const ws of wss.clients) ws.terminate();

@@ -1,0 +1,6 @@
+android/
+Nearkey/
+.data/
+output/
+.env
+.env.*

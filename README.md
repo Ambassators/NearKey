@@ -15,7 +15,7 @@ The browser has three pages: `#/login` for the password, `#/loading` for phone e
 - Server-initiated, single-use login challenges lasting at most 60 seconds and bound to the original pending session.
 - Automatic phone signatures over immutable account, service, phone and session context; browser relays the proof.
 
-Phone pairing survives server restarts. The server saves the enrolled phone's identity, public key and connection credential in `.data/phone.json`; the Android private key remains in AndroidKeyStore. Restarting clears sign-in sessions, saved apps and verification history, so a fresh sign-in still requires both factors. Automatic signatures prove key possession, not user consent; BLE does not prevent relays or prove distance. Phone keys are non-exportable in AndroidKeyStore; hardware backing is not guaranteed.
+In local mode, phone pairing survives server restarts. The server saves the enrolled phone's identity, public key and connection credential in `.data/phone.json`; the Android private key remains in AndroidKeyStore. Restarting clears sign-in sessions, saved apps and verification history, so a fresh sign-in still requires both factors. Automatic signatures prove key possession, not user consent; BLE does not prevent relays or prove distance. Phone keys are non-exportable in AndroidKeyStore; hardware backing is not guaranteed.
 
 ## Run the server and browser
 
@@ -39,6 +39,14 @@ PUBLIC_ORIGIN=https://demo.example.com DEMO_PASSWORD='choose-a-demo-password' np
 ```
 
 `PUBLIC_ORIGIN` must be the exact origin, without a path or trailing slash. Forward HTTPS/WSS to `127.0.0.1:5173`. Configure the origin explicitly; the server does not trust forwarded headers. Use a trusted certificate. For USB debug testing, [configure adb reverse](android/README.md#usb-debug-workflow) and use `http://localhost:5173` on both devices. Without that mapping, `localhost` on Android means the phone itself.
+
+## Deploy the website to Vercel
+
+The included Vercel entry point uses Upstash Redis for sessions, pairing, saved
+apps and phone messages across server instances. See [DEPLOYMENT.md](DEPLOYMENT.md)
+for new-project setup, required environment variables and the first hosted-phone
+enrollment. Hosted sessions and apps survive deployments; local mode still resets
+them on restart.
 
 ## Build the phone app
 
