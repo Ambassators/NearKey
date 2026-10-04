@@ -1,0 +1,16 @@
+{
+  "name": "nearkey-hackathon",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "start": "node server/main.mjs",
+    "start:wifi": "node server/main.mjs --wifi",
+    "proposals": "node web/proposals/serve.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

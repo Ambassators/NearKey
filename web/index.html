@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#174b3b">
+    <title>Nearkey — your phone, your second factor</title>
+    <link rel="stylesheet" href="/web/styles.css">
+    <link rel="stylesheet" href="/web/home.css">
+    <script type="module" src="/web/app.mjs"></script>
+  </head>
+  <body>
+    <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <symbol id="icon-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+        <symbol id="icon-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></symbol>
+        <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+        <symbol id="icon-bluetooth" viewBox="0 0 24 24"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></symbol>
+        <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/></symbol>
+        <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+        <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+        <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+      </defs>
+    </svg>
+    <header id="topbar" class="topbar">
+      <a class="brand" href="#/" aria-label="Nearkey home"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7,5a7,7 0,1 0,6.3 10H17v3h3v-3h3v-6H13.3A7,7 0,0 0,7 5zM7,9a3,3 0,1 1,0 6a3,3 0,0 1,0 -6z"/></svg></span>nearkey</a>
+      <nav id="home-nav" class="home-nav" aria-label="Homepage sections" hidden>
+        <a href="#how-it-works">How it works</a>
+        <a href="#security">What it proves</a>
+        <a href="#phone">The app</a>
+      </nav>
+      <div class="top-actions">
+        <a id="home-cta" class="home-cta" href="#/login" hidden>Try the demo <svg aria-hidden="true"><use href="#icon-arrow"/></svg></a>
+        <button id="reset-demo" class="quiet" type="button" hidden>Reset demo</button>
+        <button id="logout" class="quiet" hidden>Sign out <span aria-hidden="true">↗</span></button>
+      </div>
+    </header>
+    <main>
+      <p id="notice" class="notice" role="status" popover="manual" hidden></p>
+      <section id="home-view" class="home" aria-labelledby="home-title" hidden>
+        <section class="hero">
+          <div class="hero-copy">
+            <h1 id="home-title" class="hero-title" tabindex="-1">
+              <span class="line"><span>Your phone</span></span>
+              <span class="line"><span>is the key.</span></span>
+            </h1>
+            <p class="hero-lede"><strong>No codes to type.</strong> NearKey is a two‑factor provider that uses the Android phone already in your pocket. Enter your password; the phone nearby signs the login over Bluetooth and your browser relays the proof. No SMS, no six digits, no app‑switching.</p>
+            <div class="hero-actions">
+              <a class="home-button" href="#/login">Try the demo <svg aria-hidden="true"><use href="#icon-arrow"/></svg></a>
+              <a class="home-link" href="#how-it-works">See how a login happens</a>
+            </div>
+            <p id="hero-status" class="hero-status" data-state="waiting" aria-live="off"><span class="hero-status-dot" aria-hidden="true"></span><span id="hero-status-text">Waiting for a login challenge</span></p>
+          </div>
+          <div class="hero-scene" aria-hidden="true">
+            <svg class="scene" viewBox="20 16 648 504" xmlns="http://www.w3.org/2000/svg">
+              <g class="hs-laptop">
+                <rect class="hs-body" x="250" y="30" width="380" height="262" rx="14"/>
+                <rect class="hs-screen" x="264" y="44" width="352" height="234" rx="8"/>
+                <rect class="hs-base" x="222" y="298" width="436" height="12" rx="6"/>
+                <text class="hs-text hs-text-brand" x="278" y="68">nearkey</text>
+                <rect class="hs-card" x="340" y="78" width="220" height="172" rx="12"/>
+                <g class="hs-lock">
+                  <path class="hs-shackle" d="M442 100v-8a8 8 0 0 1 16 0v8"/>
+                  <rect class="hs-lock-body" x="437" y="100" width="26" height="19" rx="4"/>
+                  <path class="hs-keyhole" d="M450 107v5"/>
+                </g>
+                <g class="hs-check">
+                  <circle cx="450" cy="109" r="15"/>
+                  <path d="m443 109 5 5 10-11"/>
+                </g>
+                <g class="hs-signin">
+                  <text class="hs-text hs-text-title" x="358" y="154">Sign in</text>
+                  <rect class="hs-field" x="358" y="166" width="184" height="16" rx="4"/>
+                  <rect class="hs-field" x="358" y="188" width="184" height="16" rx="4"/>
+                  <rect class="hs-button" x="358" y="214" width="184" height="20" rx="5"/>
+                </g>
+                <g class="hs-apps">
+                  <text class="hs-text hs-text-title" x="358" y="154">Your apps</text>
+                  <g class="hs-row"><rect class="hs-app-icon" x="358" y="166" width="18" height="18" rx="5"/><rect class="hs-bar" x="384" y="171" width="104" height="8" rx="4"/></g>
+                  <g class="hs-row"><rect class="hs-app-icon" x="358" y="192" width="18" height="18" rx="5"/><rect class="hs-bar" x="384" y="197" width="76" height="8" rx="4"/></g>
+                  <g class="hs-row"><rect class="hs-app-icon" x="358" y="218" width="18" height="18" rx="5"/><rect class="hs-bar" x="384" y="223" width="126" height="8" rx="4"/></g>
+                </g>
+              </g>
+              <path class="hs-flight" d="M115 350C100 60 380 -60 450 104"/>
+              <path class="hs-arc" d="M115 350C100 60 380 -60 450 104"/>
+              <path class="hs-trail" d="M115 350C100 60 380 -60 450 104"/>
+              <g class="hs-phone">
+                <rect class="hs-body" x="30" y="190" width="170" height="320" rx="26"/>
+                <rect class="hs-screen" x="42" y="204" width="146" height="292" rx="18"/>
+                <path d="M105 216h20"/>
+                <text class="hs-text hs-text-brand" x="60" y="246">nearkey</text>
+                <circle class="hs-ring" cx="115" cy="350" r="34"/>
+                <circle class="hs-ring" cx="115" cy="350" r="34"/>
+                <circle class="hs-ring" cx="115" cy="350" r="34"/>
+                <rect class="hs-pill" x="52" y="440" width="126" height="28" rx="14"/>
+                <circle class="hs-pill-dot" cx="68" cy="454" r="3.5"/>
+                <text class="hs-text hs-text-small" x="78" y="458">Ready for sign‑in</text>
+              </g>
+              <g class="hs-key">
+                <g class="hs-key-inner">
+                  <g transform="scale(1.7) rotate(-45) translate(-12 -12)">
+                    <circle cx="8" cy="9" r="5"/>
+                    <path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/>
+                  </g>
+                </g>
+              </g>
+            </svg>
+          </div>
+        </section>
+
+        <section id="how-it-works" class="flow" aria-labelledby="flow-title">
+          <div class="flow-inner">
+            <div class="flow-heading" data-reveal>
+              <h2 id="flow-title">How a login happens</h2>
+              <p>Four steps, one signature, sixty seconds. The dashboard stays locked until the last one.</p>
+            </div>
+            <ol class="flow-steps">
+              <li class="flow-step">
+                <span class="flow-number" aria-hidden="true">1</span>
+                <h3>Password</h3>
+                <p>You enter your password. The server opens a <em>pending</em> login; nothing protected is readable yet.</p>
+              </li>
+              <li class="flow-step">
+                <span class="flow-number" aria-hidden="true">2</span>
+                <h3>Challenge</h3>
+                <p>The server issues a single‑use challenge bound to this session and sends it to your enrolled phone. It expires in 60 seconds.</p>
+              </li>
+              <li class="flow-step">
+                <span class="flow-number" aria-hidden="true">3</span>
+                <h3>Signature</h3>
+                <p>Your phone signs the challenge with a key that never leaves AndroidKeyStore, then advertises the proof over Bluetooth LE.</p>
+              </li>
+              <li class="flow-step">
+                <span class="flow-number" aria-hidden="true">4</span>
+                <h3>Verified</h3>
+                <p>Your browser reads the signed proof and relays it. The server checks it once, marks the login complete and your apps open.</p>
+              </li>
+            </ol>
+            <p class="flow-footnote" data-reveal>Refreshing resumes the server‑confirmed step. Changing the URL never grants a factor.</p>
+          </div>
+        </section>
+
+        <section id="security" class="proof" aria-labelledby="proof-title">
+          <div class="proof-inner">
+            <div class="proof-heading" data-reveal>
+              <h2 id="proof-title">Honest about what a Bluetooth key proves.</h2>
+              <p>Security claims should be as narrow as the mechanism. Here is exactly what a completed NearKey login tells the server, and what it doesn't.</p>
+            </div>
+            <div class="proof-columns">
+              <div class="proof-column" data-reveal>
+                <h3>It proves</h3>
+                <ul>
+                  <li><svg aria-hidden="true"><use href="#icon-check"/></svg>The enrolled phone's private key signed <strong>this exact challenge</strong>, nonce and session.</li>
+                  <li><svg aria-hidden="true"><use href="#icon-check"/></svg>The challenge was <strong>issued by the server</strong>, not by the browser or the phone.</li>
+                  <li><svg aria-hidden="true"><use href="#icon-check"/></svg>Each proof is accepted <strong>once</strong> and only within its 60‑second window.</li>
+                  <li><svg aria-hidden="true"><use href="#icon-check"/></svg>A password alone <strong>cannot replace</strong> an enrolled phone or skip verification.</li>
+                </ul>
+              </div>
+              <div class="proof-column proof-column-limits" data-reveal>
+                <h3>It doesn't prove</h3>
+                <ul>
+                  <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Distance.</strong> Bluetooth LE doesn't measure proximity or stop a relay attack.</li>
+                  <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Consent.</strong> Signatures are automatic in this demo; explicit phone approval is deferred.</li>
+                  <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Hardware backing.</strong> Keys are non‑exportable in AndroidKeyStore, but a secure element isn't guaranteed.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="phone" class="companion" aria-labelledby="phone-title">
+          <div class="companion-inner">
+            <div class="companion-visual" aria-hidden="true">
+              <span class="companion-ring"></span>
+              <span class="companion-ring"></span>
+              <span class="companion-ring"></span>
+              <div class="device">
+                <div class="device-screen">
+                  <div class="device-bar"><span class="device-brand">nearkey</span><span class="device-state"><span class="status-dot"></span>Online</span></div>
+                  <p class="device-title">Keep your phone nearby</p>
+                  <p class="device-copy">Your phone completes sign‑in over Bluetooth.</p>
+                  <div class="device-site">
+                    <span class="device-site-icon">N</span>
+                    <span class="device-site-text"><strong>Nearkey demo</strong><small>localhost:5173</small></span>
+                  </div>
+                  <div class="device-status">
+                    <span>Advertising for pending challenge</span>
+                    <span id="device-timer" class="device-timer">60s</span>
+                  </div>
+                  <div class="device-button">Scan setup QR code</div>
+                </div>
+              </div>
+            </div>
+            <div class="companion-copy" data-reveal>
+              <h2 id="phone-title">The authenticator lives on the phone you already carry.</h2>
+              <p>Enroll once: the browser shows a setup QR, you scan it in <strong>NearKey Authenticator</strong>, review the server address and tap <em>Enroll phone</em>. From then on, verification runs in the background whenever a login is pending.</p>
+              <ul class="companion-facts">
+                <li>Private key generated and kept in AndroidKeyStore; only the public key leaves the phone.</li>
+                <li>Pairing survives server restarts. Sessions and app lists are reset on purpose.</li>
+                <li>Replace a phone from the dashboard: the old one stays enrolled until the new one finishes.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="closing" aria-labelledby="closing-title">
+          <div class="closing-inner" data-reveal>
+            <h2 id="closing-title">Try it in two minutes.</h2>
+            <p>Sign in with the demo account, enroll an Android phone, and watch the key land.</p>
+            <a class="home-button home-button-large" href="#/login">Open the demo <svg aria-hidden="true"><use href="#icon-arrow"/></svg></a>
+            <p class="closing-fineprint">Demo scope: Mac Chromium with Web Bluetooth, one account, one Android phone with BLE advertising. Credentials are in the README.</p>
+          </div>
+        </section>
+
+        <footer class="home-footer">
+          <span class="home-footer-brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7,5a7,7 0,1 0,6.3 10H17v3h3v-3h3v-6H13.3A7,7 0,0 0,7 5zM7,9a3,3 0,1 1,0 6a3,3 0,0 1,0 -6z"/></svg></span>nearkey</span>
+          <span>A Bluetooth 2FA provider demo · login contract v2</span>
+        </footer>
+      </section>
+      <section id="signin-stage" class="signin-page">
+        <section class="login-card" aria-label="Nearkey sign-in">
+          <div class="card-content">
+          <section id="login-view" aria-labelledby="login-title" hidden>
+          <div id="credentials-panel">
+            <h1 id="login-title" tabindex="-1">Sign in</h1>
+            <form id="login-form">
+              <label for="username">Username</label>
+              <input id="username" name="username" autocomplete="username" value="demo" required>
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+              <button id="login-button" class="primary" type="submit">Continue <svg><use href="#icon-arrow"/></svg></button>
+            </form>
+            <div class="signin-divider" aria-hidden="true"><span>or</span></div>
+            <div class="social-signin" aria-label="Other sign-in options">
+              <button id="google-signin" class="social-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285f4" d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-2 3.02v2.51h3.24c1.9-1.75 2.98-4.33 2.98-7.36Z"/><path fill="#34a853" d="M12 22c2.7 0 4.96-.9 6.62-2.41l-3.24-2.51c-.9.6-2.04.97-3.38.97-2.6 0-4.8-1.76-5.59-4.12H3.07v2.59A10 10 0 0 0 12 22Z"/><path fill="#fbbc05" d="M6.41 13.93a6 6 0 0 1 0-3.86V7.48H3.07a10 10 0 0 0 0 9.04l3.34-2.59Z"/><path fill="#ea4335" d="M12 5.95c1.47 0 2.79.5 3.83 1.5l2.88-2.88A9.6 9.6 0 0 0 12 2a10 10 0 0 0-8.93 5.48l3.34 2.59C7.2 7.71 9.4 5.95 12 5.95Z"/></svg>
+                <span>Continue with Google</span>
+              </button>
+              <button id="apple-signin" class="social-button" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.37 1.43c.11 1.18-.35 2.36-1.07 3.21-.74.89-1.95 1.58-3.13 1.49-.16-1.15.43-2.34 1.11-3.11.76-.88 2.05-1.53 3.09-1.59ZM20.4 17.44c-.49 1.1-.72 1.59-1.35 2.57-.87 1.33-2.09 3-3.6 3.02-1.34.01-1.69-.87-3.51-.86-1.82.01-2.21.87-3.55.86-1.51-.02-2.66-1.53-3.53-2.86-2.43-3.72-2.69-8.08-1.19-10.4 1.06-1.64 2.73-2.6 4.3-2.6 1.6 0 2.61.88 3.93.88 1.28 0 2.06-.88 3.92-.88 1.4 0 2.9.76 3.96 2.07-3.48 1.91-2.92 6.88.62 8.2Z"/></svg>
+                <span>Continue with Apple</span>
+              </button>
+            </div>
+          </div>
+          </section>
+      <section id="auth-view" class="auth-page" aria-labelledby="auth-page-title">
+        <h1 id="auth-page-title" class="sr-only" tabindex="-1">Phone setup</h1>
+        <p id="session-loading" class="session-loading" role="status">
+          <span id="auth-spinner" class="auth-spinner" aria-hidden="true"></span>
+          Checking session…
+        </p>
+        <div id="wizard-layout" class="wizard-layout">
+            <div id="factor-panel" hidden>
+              <div id="setup-panel">
+                <div class="phone-heading">
+                  <button id="back-to-login" class="back-arrow" type="button" aria-label="Back to sign in"><svg aria-hidden="true"><use href="#icon-arrow"/></svg></button>
+                  <h2 id="factor-title" tabindex="-1">Connect your phone</h2>
+                </div>
+                <div id="factor-status" class="factor-status">
+                  <span class="mini-icon"><svg><use href="#icon-phone"/></svg></span>
+                  <div>
+                    <strong id="setup-phone-name">Your phone key</strong>
+                    <span id="phone-status">Not enrolled</span>
+                  </div>
+                  <span id="setup-phone-dot" class="status-dot"></span>
+                </div>
+                <div id="enrollment">
+                  <div id="pairing-state" class="pairing-state" role="status" hidden>
+                    <span id="pairing-state-spinner" class="auth-spinner" aria-hidden="true"></span>
+                    <p id="pairing-state-message">Preparing QR code…</p>
+                    <p id="pairing-state-detail" class="muted" hidden>Trying again automatically.</p>
+                    <button id="pairing-resume" class="secondary" type="button" hidden>Show QR code here</button>
+                  </div>
+                  <div id="pairing" class="pairing" hidden>
+                    <div class="pair-visual">
+                      <p class="pair-prompt">Scan the QR code to get started</p>
+                      <div id="pair-qr" class="pair-qr" hidden></div>
+                    </div>
+                    <p id="pair-instruction" class="pair-instruction"></p>
+                    <p id="pair-time" class="fineprint"></p>
+                    <details id="pair-manual" class="pair-manual">
+                      <summary class="secondary">Enter details manually <svg aria-hidden="true"><use href="#icon-arrow"/></svg></summary>
+                      <label for="pair-code">Enrollment code</label>
+                      <input id="pair-code" readonly spellcheck="false">
+                      <label for="base-url">Nearkey server URL</label>
+                      <input id="base-url" readonly spellcheck="false">
+                    </details>
+                  </div>
+                </div>
+                <div id="bluetooth-setup" hidden>
+                  <p id="permission-description" class="muted"></p>
+                  <button id="choose-button" class="secondary" type="button">Connect phone <svg><use href="#icon-bluetooth"/></svg></button>
+                  <button id="verify-button" class="primary" type="button">Verify phone <svg><use href="#icon-arrow"/></svg></button>
+                </div>
+              </div>
+              <section id="challenge-panel" aria-labelledby="challenge-title" hidden>
+                <div id="key-toss" class="key-toss" data-mode="rest" aria-hidden="true">
+                  <svg class="key-toss-art" viewBox="0 -6 340 112" xmlns="http://www.w3.org/2000/svg">
+                    <path class="kt-flight" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
+                    <path class="kt-arc" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
+                    <path class="kt-trail" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
+                    <g class="kt-phone">
+                      <rect x="24" y="26" width="40" height="74" rx="8"/>
+                      <rect class="kt-phone-screen" x="29" y="34" width="30" height="54" rx="3"/>
+                      <path d="M39 30h10M39 95h10"/>
+                      <g class="kt-error">
+                        <circle cx="44" cy="60" r="12"/>
+                        <path d="m39 55 10 10m0-10-10 10"/>
+                      </g>
+                    </g>
+                    <g class="kt-laptop">
+                      <rect x="240" y="26" width="80" height="56" rx="6"/>
+                      <rect class="kt-screen" x="245" y="31" width="70" height="46" rx="3"/>
+                      <rect class="kt-base" x="228" y="86" width="104" height="5" rx="2.5"/>
+                      <g class="kt-lock">
+                        <path class="kt-shackle" d="M274 54v-5a6 6 0 0 1 12 0v5"/>
+                        <rect class="kt-lock-body" x="270" y="54" width="20" height="15" rx="3"/>
+                        <path class="kt-keyhole" d="M280 59.5v4"/>
+                      </g>
+                      <g class="kt-success">
+                        <circle cx="280" cy="57" r="14"/>
+                        <path d="m273 57 5 5 9-10"/>
+                      </g>
+                    </g>
+                    <g class="kt-key">
+                      <g class="kt-key-inner">
+                        <g transform="rotate(-45) translate(-12 -12)">
+                          <circle cx="8" cy="9" r="5"/>
+                          <path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/>
+                        </g>
+                      </g>
+                    </g>
+                  </svg>
+                </div>
+                <div class="section-top">
+                  <h2 id="challenge-title" tabindex="-1">Verifying phone</h2>
+                  <span id="countdown" class="timer"></span>
+                </div>
+                <p id="challenge-message" class="muted" role="status"></p>
+                <div class="challenge-actions">
+                  <button id="reconnect-button" class="primary" type="button" hidden>Reconnect phone</button>
+                  <button id="retry-button" class="primary" type="button" hidden>Try again</button>
+                  <button id="cancel-button" class="text-button" type="button">Cancel verification</button>
+                </div>
+              </section>
+              <button id="replace-phone-button" class="text-button replace-phone-button" type="button" hidden>Change phone</button>
+            </div>
+        </div>
+      </section>
+          </div>
+        </section>
+      </section>
+      <section id="dashboard-view" class="apps-dashboard" aria-labelledby="dashboard-title" hidden>
+        <header class="apps-heading" id="overview">
+          <div>
+            <h1 id="dashboard-title" tabindex="-1">Your apps</h1>
+          </div>
+          <button id="add-app-button" class="primary add-app-button" type="button">Add app <span aria-hidden="true">+</span></button>
+        </header>
+        <section class="dashboard-authenticator" aria-label="Your authenticator">
+          <span class="mini-icon" aria-hidden="true"><svg><use href="#icon-phone"/></svg></span>
+          <div class="authenticator-info">
+            <strong id="dashboard-phone-name">Android phone</strong>
+          </div>
+          <span id="dashboard-phone-status" class="badge">Enrolled</span>
+          <button id="dashboard-replace-phone-button" class="text-button dashboard-replace-phone-button" type="button">Change phone</button>
+        </section>
+        <section class="connected-apps" aria-labelledby="connected-apps-title">
+          <div class="connected-apps-heading">
+            <h2 id="connected-apps-title" class="sr-only">Connected apps</h2>
+            <span id="site-count" class="site-count">0 apps</span>
+          </div>
+          <ul id="connected-sites" class="connected-sites"></ul>
+          <div id="no-connected-sites" class="apps-empty" hidden>
+            <p>No apps yet.</p>
+          </div>
+        </section>
+      </section>
+      <dialog id="replace-phone-dialog" class="app-dialog phone-dialog" aria-labelledby="replace-phone-title" aria-describedby="replace-phone-description">
+        <div class="app-dialog-heading">
+          <div>
+            <h2 id="replace-phone-title">Connect a different phone</h2>
+          </div>
+        </div>
+        <p id="replace-phone-description" class="muted">Verify your current phone, then scan a setup QR code with the phone you want to connect.</p>
+        <div class="phone-dialog-actions">
+          <button id="replace-phone-close" class="secondary" type="button">Cancel</button>
+          <button id="replace-phone-confirm" class="primary" type="button">Continue <svg aria-hidden="true"><use href="#icon-arrow"/></svg></button>
+        </div>
+      </dialog>
+      <dialog id="replacement-qr-dialog" class="app-dialog phone-dialog replacement-qr-dialog" aria-labelledby="replacement-qr-title" aria-describedby="replacement-instruction">
+        <div class="app-dialog-heading">
+          <div>
+            <h2 id="replacement-qr-title">Scan with your new phone</h2>
+          </div>
+        </div>
+        <p class="muted">Your current phone stays connected until the change is complete.</p>
+        <div class="pairing replacement-pairing">
+          <div id="replacement-qr" class="pair-qr"></div>
+          <p id="replacement-instruction" class="pair-instruction" role="status"></p>
+          <p id="replacement-time" class="fineprint"></p>
+          <details id="replacement-manual" class="pair-manual">
+            <summary>Enter details manually</summary>
+            <label for="replacement-code">Enrollment code</label>
+            <input id="replacement-code" readonly spellcheck="false" autocomplete="off">
+            <label for="replacement-origin">Nearkey server URL</label>
+            <input id="replacement-origin" readonly spellcheck="false" autocomplete="off">
+          </details>
+        </div>
+        <div class="phone-dialog-actions">
+          <button id="replacement-cancel" class="secondary" type="button">Cancel</button>
+          <button id="replacement-refresh" class="primary" type="button">Get a new QR code</button>
+        </div>
+      </dialog>
+      <dialog id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title">
+        <div class="app-dialog-heading">
+          <div>
+            <h2 id="app-dialog-title">Add an app</h2>
+          </div>
+          <button id="app-dialog-close" class="dialog-close" type="button" aria-label="Close add app form">×</button>
+        </div>
+        <form id="app-form">
+          <label for="app-name">App name</label>
+          <input id="app-name" name="name" required maxlength="80" autocomplete="off" placeholder="e.g. My workspace">
+          <label for="app-url">Website <span class="optional-label">Optional</span></label>
+          <input id="app-url" name="url" type="url" maxlength="2048" autocomplete="url" placeholder="https://example.com">
+          <button id="app-save" class="primary" type="submit">Save app <svg><use href="#icon-arrow"/></svg></button>
+        </form>
+      </dialog>
+    </main>
+  </body>
+</html>
