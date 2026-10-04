@@ -9,8 +9,16 @@ const HOLD_AT = LAND + 700;
 const RESET_AT = HOLD_AT + 500;
 const LOOP_END = RESET_AT + 420;
 const HOME = {translateX: 44, translateY: 60};
-const LOCKED = {body: '#366146', screen: '#eef5e6'};
-const OPEN = {body: '#4d8a5e', screen: '#d9f1c7'};
+
+// Scene colours come from the stylesheet tokens so light and dark themes match.
+function sceneColors(root) {
+  const style = typeof getComputedStyle === 'function' ? getComputedStyle(root) : null;
+  const read = (name, fallback) => style?.getPropertyValue(name).trim() || fallback;
+  return {
+    locked: {body: read('--kt-body', '#19553f'), screen: read('--kt-screen', '#f4f7f1')},
+    open: {body: read('--kt-body-open', '#4f9a6c'), screen: read('--kt-screen-open', '#dcefd0')},
+  };
+}
 
 // Modes: 'loop' while verification runs, 'finish' once the login is approved
 // (settles on the unlocked frame), 'rest' otherwise (static, dimmed by CSS).
@@ -19,6 +27,7 @@ export class KeyToss {
     this.root = root;
     this.mode = null;
     this.reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const {locked: LOCKED, open: OPEN} = sceneColors(root);
     const q = selector => root.querySelector(selector);
     const key = q('.kt-key');
     const inner = q('.kt-key-inner');

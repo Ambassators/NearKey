@@ -3,136 +3,153 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#174b3b">
-    <title>Nearkey — your phone, your second factor</title>
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f7f1">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e1714">
+    <title>Nearkey - Sign in with your phone nearby</title>
     <link rel="stylesheet" href="/web/styles.css">
     <script type="module" src="/web/app.mjs"></script>
   </head>
   <body>
+    <!-- Icons: Tabler Icons (MIT), vendored as SVG symbols. See web/tabler-icons-LICENSE.txt. -->
     <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <defs>
-        <symbol id="icon-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
-        <symbol id="icon-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></symbol>
-        <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
-        <symbol id="icon-bluetooth" viewBox="0 0 24 24"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></symbol>
-        <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/></symbol>
-        <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+        <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12l14 0"/><path d="M13 18l6 -6"/><path d="M13 6l6 6"/></symbol>
+        <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M5 12l14 0"/><path d="M5 12l6 6"/><path d="M5 12l6 -6"/></symbol>
+        <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5l0 14"/><path d="M5 12l14 0"/></symbol>
+        <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9l6 6l6 -6"/></symbol>
+        <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M11.46 20.846a12 12 0 0 1 -7.96 -14.846a12 12 0 0 0 8.5 -3a12 12 0 0 0 8.5 3a12 12 0 0 1 -.09 7.06"/><path d="M15 19l2 2l4 -4"/></symbol>
+        <symbol id="i-phone" viewBox="0 0 24 24"><path d="M6 5a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-14z"/><path d="M11 4h2"/><path d="M12 17v.01"/></symbol>
+        <symbol id="i-bluetooth" viewBox="0 0 24 24"><path d="M7 8l10 8l-5 4l0 -16l5 4l-10 8"/></symbol>
+        <symbol id="i-key" viewBox="0 0 24 24"><path d="M16.555 3.843l3.602 3.602a2.877 2.877 0 0 1 0 4.069l-2.643 2.643a2.877 2.877 0 0 1 -4.069 0l-.301 -.301l-6.558 6.558a2 2 0 0 1 -1.239 .578l-.175 .008h-1.172a1 1 0 0 1 -.993 -.883l-.007 -.117v-1.172a2 2 0 0 1 .467 -1.284l.119 -.13l.414 -.414h2v-2h2v-2l2.144 -2.144l-.301 -.301a2.877 2.877 0 0 1 0 -4.069l2.643 -2.643a2.877 2.877 0 0 1 4.069 0z"/><path d="M15 9h.01"/></symbol>
+        <symbol id="i-qrcode" viewBox="0 0 24 24"><path d="M4 4m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z"/><path d="M7 17l0 .01"/><path d="M14 4m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z"/><path d="M7 7l0 .01"/><path d="M4 14m0 1a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1z"/><path d="M17 7l0 .01"/><path d="M14 14l3 0"/><path d="M20 14l0 .01"/><path d="M14 14l0 3"/><path d="M14 20l3 0"/><path d="M17 17l3 0"/><path d="M20 17l0 3"/></symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4"/></symbol>
+        <symbol id="i-logout" viewBox="0 0 24 24"><path d="M14 8v-2a2 2 0 0 0 -2 -2h-7a2 2 0 0 0 -2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2 -2v-2"/><path d="M9 12h12l-3 -3"/><path d="M18 15l3 -3"/></symbol>
+        <symbol id="i-apps" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v2a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2z"/><path d="M4 14m0 2a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v2a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2z"/><path d="M14 14m0 2a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v2a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2z"/><path d="M14 7l6 0"/><path d="M17 4l0 6"/></symbol>
       </defs>
     </svg>
+
     <header class="topbar">
-      <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true">n</span>nearkey<span class="brand-note">AUTHENTICATOR</span></a>
-      <div class="top-actions">
-        <span class="status-label"><span class="status-dot"></span> A little closer. A lot safer.</span>
-        <button id="logout" class="quiet" hidden>Sign out <span aria-hidden="true">↗</span></button>
-      </div>
+      <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true">n</span><span class="wordmark">nearkey</span></a>
+      <button id="logout" class="ghost" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button>
     </header>
+
     <main>
       <p id="notice" class="notice" role="status" hidden></p>
-      <section id="login-view" class="signin-page" aria-labelledby="login-title" hidden>
-        <div class="signin-heading">
-          <span class="signin-symbol" aria-hidden="true"><svg><use href="#icon-key"/></svg></span>
-          <p class="eyebrow">NEARKEY / SETUP</p>
-          <p class="signin-intro">Set up your authenticator in a few simple steps.</p>
-          <ol class="wizard-progress account-progress" aria-label="Setup progress">
+
+      <!-- Step 1: password -->
+      <section id="login-view" class="page page-login" aria-labelledby="login-title" hidden>
+        <aside class="rail">
+          <p class="rail-title">Your phone is the second factor.</p>
+          <p class="rail-copy">A password opens a pending sign-in. Your enrolled Android phone finishes it over Bluetooth, nearby and automatic.</p>
+          <ol class="wizard-progress" aria-label="Setup progress">
             <li class="active" aria-current="step"><span>1</span>Account</li>
             <li><span>2</span>Enroll phone</li>
             <li><span>3</span>Verify nearby</li>
             <li><span>4</span>Ready</li>
           </ol>
-        </div>
-        <section class="login-card signin-card" aria-labelledby="login-title">
-          <div id="credentials-panel">
-            <p class="eyebrow">STEP 1 / ACCOUNT</p>
-            <h1 id="login-title" tabindex="-1">Start with your account.</h1>
-            <p class="muted login-copy">Sign in, then enroll and verify the phone you’ll use as your second factor.</p>
+        </aside>
+        <section class="card login-card" aria-labelledby="login-title">
+          <div id="credentials-panel" class="panel">
+            <h1 id="login-title" tabindex="-1">Sign in</h1>
+            <p class="muted login-copy">Enter your password to start. Your nearby phone completes the sign-in.</p>
             <form id="login-form">
-              <label for="username">Username</label>
-              <input id="username" name="username" autocomplete="username" value="demo" required>
-              <div class="label-row">
-                <label for="password">Password</label>
-                <span>Account password</span>
+              <div class="field">
+                <label for="username">Username</label>
+                <input id="username" name="username" autocomplete="username" value="demo" required>
               </div>
-              <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
-              <button id="login-button" class="primary" type="submit">Continue <svg><use href="#icon-arrow"/></svg></button>
+              <div class="field">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Your account password" required>
+              </div>
+              <button id="login-button" class="primary" type="submit">Continue <svg class="icon arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg></button>
             </form>
             <div class="demo-credentials">
-              <span class="mini-icon"><svg><use href="#icon-key"/></svg></span>
+              <span class="mini-icon" aria-hidden="true"><svg class="icon"><use href="#i-key"/></svg></span>
               <div>
-                <strong>Try the demo</strong>
+                <strong>Demo account</strong>
                 <p><code>demo</code> / <code>demo-passive-key</code></p>
               </div>
             </div>
           </div>
-          <div class="login-foot">
-            <svg><use href="#icon-shield"/></svg>
-            <span>Next, your nearby phone verifies the second factor.</span>
-          </div>
+          <p class="card-foot"><svg class="icon" aria-hidden="true"><use href="#i-shield-check"/></svg><span>Works in Chromium on HTTPS or localhost, with the Android app in the foreground.</span></p>
         </section>
-        <p class="browser-note">Use Chromium on HTTPS or localhost, with the Android app in the foreground.</p>
       </section>
-      <section id="auth-view" class="auth-page wizard-page" aria-labelledby="auth-page-title">
-        <ol class="wizard-progress" aria-label="Setup progress">
-          <li id="wizard-account-step" class="complete"><span>1</span>Account</li>
-          <li id="wizard-enroll-step" class="active" aria-current="step"><span>2</span>Enroll phone</li>
-          <li id="wizard-verify-step"><span>3</span>Verify nearby phone</li>
-          <li id="wizard-ready-step"><span>4</span>Ready</li>
-        </ol>
-        <header class="auth-page-heading">
-          <div>
-            <p id="wizard-step-label" class="eyebrow">SETUP / CHECKING YOUR SESSION</p>
+
+      <!-- Steps 2 and 3: enroll and verify the phone -->
+      <section id="auth-view" class="page page-wizard" aria-labelledby="auth-page-title">
+        <aside class="rail">
+          <ol class="wizard-progress" aria-label="Setup progress">
+            <li id="wizard-account-step" class="complete"><span>1</span>Account</li>
+            <li id="wizard-enroll-step" class="active" aria-current="step"><span>2</span>Enroll phone</li>
+            <li id="wizard-verify-step"><span>3</span>Verify nearby</li>
+            <li id="wizard-ready-step"><span>4</span>Ready</li>
+          </ol>
+          <header class="auth-page-heading">
+            <div class="step-row">
+              <p id="wizard-step-label" class="step-label">Checking your session</p>
+              <span id="auth-spinner" class="spinner" aria-hidden="true"></span>
+            </div>
             <h1 id="auth-page-title" tabindex="-1">Checking your session…</h1>
             <p id="auth-page-summary" class="muted">Restoring your account and phone connection.</p>
-          </div>
-          <span id="auth-spinner" class="auth-spinner" aria-hidden="true"></span>
-        </header>
-        <div class="wizard-layout">
-          <section class="login-card auth-card wizard-card" aria-label="Set up your phone">
+          </header>
+        </aside>
+
+        <div class="wizard-main">
+          <section class="card wizard-card" aria-label="Set up your phone">
             <ol class="login-progress" aria-label="Sign-in progress" hidden>
               <li id="password-step" class="active"><span>01</span>Password</li>
               <li id="phone-step"><span>02</span>Nearby phone</li>
             </ol>
-            <div id="factor-panel" hidden>
-              <div id="setup-panel">
-                <p class="eyebrow">PASSWORD ACCEPTED</p>
-                <h2 id="factor-title" tabindex="-1">One more step.<br>Keep your phone close.</h2>
+            <div id="factor-panel" class="panel" hidden>
+              <div id="setup-panel" class="panel">
+                <h2 id="factor-title" tabindex="-1">Scan to enroll your phone.</h2>
                 <p id="phone-description" class="muted login-copy"></p>
                 <div class="factor-status">
-                  <span class="mini-icon"><svg><use href="#icon-phone"/></svg></span>
+                  <span class="mini-icon" aria-hidden="true"><svg class="icon"><use href="#i-phone"/></svg></span>
                   <div>
                     <strong id="setup-phone-name">Your phone key</strong>
                     <span id="phone-status">Not enrolled</span>
                   </div>
-                  <span id="setup-phone-dot" class="status-dot"></span>
+                  <span id="setup-phone-dot" class="status-dot" aria-hidden="true"></span>
                 </div>
                 <p id="bluetooth-problem" class="notice" hidden></p>
-                <div id="enrollment">
+                <div id="enrollment" class="panel">
                   <ol class="steps">
                     <li>Open the Nearkey Android app with Bluetooth enabled.</li>
-                    <li>Tap “Scan setup QR code” and scan your enrollment code.</li>
-                    <li>Tap “Enroll phone” on your phone, then keep the app open. This page advances automatically.</li>
+                    <li>Tap “Scan setup QR code” and scan the code below.</li>
+                    <li>Tap “Enroll phone”, then keep the app open. This page advances on its own.</li>
                   </ol>
-                  <button id="pair-button" class="primary" type="button">Show setup QR code <svg><use href="#icon-arrow"/></svg></button>
-                  <div id="pairing" class="pairing" hidden>
-                    <div id="pair-qr" class="pair-qr" hidden></div>
+                  <button id="pair-button" class="primary" type="button">Show setup QR code <svg class="icon" aria-hidden="true"><use href="#i-qrcode"/></svg></button>
+                  <div id="pairing" class="pairing panel" hidden>
+                    <div id="pair-qr" class="pair-qr panel" hidden></div>
                     <p id="pair-instruction" class="pair-instruction"></p>
                     <p id="pair-time" class="fineprint"></p>
                     <details id="pair-manual" class="pair-manual">
-                      <summary>Enter details manually</summary>
-                      <label for="pair-code">Enrollment code</label>
-                      <input id="pair-code" readonly spellcheck="false">
-                      <label for="base-url">Nearkey server URL</label>
-                      <input id="base-url" readonly spellcheck="false">
+                      <summary>Enter details manually<svg class="icon chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+                      <div class="field">
+                        <label for="pair-code">Enrollment code</label>
+                        <input id="pair-code" readonly spellcheck="false">
+                      </div>
+                      <div class="field">
+                        <label for="base-url">Nearkey server URL</label>
+                        <input id="base-url" readonly spellcheck="false">
+                      </div>
                     </details>
-                    <p class="fineprint">Your phone needs access to this server. For local USB setup, keep USB forwarding enabled. Deployed apps use HTTPS.</p>
+                    <p class="fineprint">Your phone needs to reach this server. For local USB setup keep USB forwarding enabled; deployed servers use HTTPS.</p>
                   </div>
                 </div>
-                <div id="bluetooth-setup" hidden>
+                <div id="bluetooth-setup" class="panel" hidden>
                   <p id="permission-description" class="muted"></p>
-                  <button id="choose-button" class="secondary" type="button">Choose your phone <svg><use href="#icon-bluetooth"/></svg></button>
-                  <button id="verify-button" class="primary" type="button">Verify nearby phone <svg><use href="#icon-arrow"/></svg></button>
+                  <div class="button-stack">
+                    <button id="choose-button" class="secondary" type="button">Choose your phone <svg class="icon" aria-hidden="true"><use href="#i-bluetooth"/></svg></button>
+                    <button id="verify-button" class="primary" type="button">Verify nearby phone <svg class="icon arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg></button>
+                  </div>
                 </div>
               </div>
-              <section id="challenge-panel" aria-labelledby="challenge-title" hidden>
+
+              <section id="challenge-panel" class="panel" aria-labelledby="challenge-title" hidden>
                 <div id="key-toss" class="key-toss" data-mode="rest" aria-hidden="true">
                   <svg class="key-toss-art" viewBox="0 -6 340 112" xmlns="http://www.w3.org/2000/svg">
                     <path class="kt-flight" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
@@ -162,10 +179,9 @@
                   </svg>
                 </div>
                 <div class="section-top">
-                  <p class="eyebrow">NEARBY VERIFICATION</p>
+                  <h2 id="challenge-title" tabindex="-1">Checking your phone key.</h2>
                   <span id="countdown" class="timer"></span>
                 </div>
-                <h2 id="challenge-title" tabindex="-1">Checking your<br>phone key.</h2>
                 <p id="challenge-message" class="muted" role="status"></p>
                 <dl class="login-details">
                   <div>
@@ -182,29 +198,27 @@
                   </div>
                 </dl>
                 <p id="delivery-status" class="fineprint"></p>
-                <div class="challenge-actions">
+                <div class="challenge-actions button-stack">
                   <button id="reconnect-button" class="primary" type="button" hidden>Choose / reconnect phone</button>
                   <button id="retry-button" class="primary" type="button" hidden>Try verification again</button>
                   <button id="cancel-button" class="text-button" type="button">Cancel verification</button>
                 </div>
               </section>
-              <button id="replace-phone-button" class="secondary replace-phone-button" type="button" hidden>Connect a different phone <svg aria-hidden="true"><use href="#icon-phone"/></svg></button>
-              <button id="back-button" class="text-button back-button" type="button">← Use a different account</button>
+
+              <button id="replace-phone-button" class="secondary replace-phone-button" type="button" hidden>Connect a different phone <svg class="icon" aria-hidden="true"><use href="#i-phone"/></svg></button>
+              <button id="back-button" class="text-button back-button" type="button"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Use a different account</button>
             </div>
-            <div class="login-foot">
-              <svg><use href="#icon-shield"/></svg>
-              <span>Your dashboard opens after your phone’s signature is verified.</span>
-            </div>
+            <p class="card-foot"><svg class="icon" aria-hidden="true"><use href="#i-shield-check"/></svg><span>Your dashboard opens only after the server verifies your phone’s signature.</span></p>
           </section>
-          <details id="wizard-diagnostics" class="wizard-diagnostics">
-            <summary>Connection diagnostics <span>Live updates</span></summary>
-            <section class="intro connection-debug" aria-labelledby="debug-title">
-              <div class="debug-topline">
-                <p class="eyebrow">NEARKEY / CONNECTION MONITOR</p>
-                <span class="debug-live"><span class="status-dot" aria-hidden="true"></span>LIVE</span>
-              </div>
-              <h2 id="debug-title">Live connection debug</h2>
-              <p class="debug-copy">Follow each step from password acceptance to your phone’s Bluetooth proof.</p>
+
+          <details id="wizard-diagnostics" class="diagnostics">
+            <summary>
+              <span class="diagnostics-title">Connection diagnostics</span>
+              <span class="live"><span class="live-dot" aria-hidden="true"></span>Live</span>
+              <svg class="icon chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+            </summary>
+            <section class="diagnostics-body connection-debug" aria-labelledby="debug-title">
+              <h2 id="debug-title" class="sr-only">Live connection debug</h2>
               <dl class="debug-status">
                 <div><dt>Session</dt><dd id="debug-session">Checking session…</dd></div>
                 <div><dt>Phone</dt><dd id="debug-phone">Checking phone…</dd></div>
@@ -213,32 +227,30 @@
               </dl>
               <dl class="debug-timing">
                 <div><dt>Elapsed</dt><dd id="debug-elapsed">0.0s</dd></div>
-                <div><dt>Time remaining</dt><dd id="debug-deadline">—</dd></div>
+                <div><dt>Time remaining</dt><dd id="debug-deadline">Not running</dd></div>
               </dl>
-              <div class="debug-log-heading">
-                <h3 id="debug-events-title">Connection events</h3>
-                <span>RECENT ACTIVITY</span>
-              </div>
+              <h3 id="debug-events-title" class="debug-log-heading">Connection events</h3>
               <ol id="debug-events" class="debug-events" aria-labelledby="debug-events-title" role="log" aria-live="polite" aria-relevant="additions">
-                <li><span class="debug-event-time">—</span><span>Waiting for connection updates.</span></li>
+                <li><span class="debug-event-time">--:--:--</span><span>Waiting for connection updates.</span></li>
               </ol>
-              <p class="debug-foot">Keep the Android app open while verifying your nearby phone.</p>
+              <p class="debug-foot">Keep the Android app open while your nearby phone is verified. Only status text is shown here; no secrets.</p>
             </section>
           </details>
-          <p class="browser-note">Keep your enrolled phone nearby and the Android app open.</p>
         </div>
       </section>
-      <section id="dashboard-view" class="apps-dashboard" aria-labelledby="dashboard-title" hidden>
-        <header class="apps-heading" id="overview">
+
+      <!-- Step 4: verified dashboard -->
+      <section id="dashboard-view" class="page page-dashboard" aria-labelledby="dashboard-title" hidden>
+        <header class="dash-heading" id="overview">
           <div>
-            <p class="eyebrow">YOUR NEARKEY WORKSPACE</p>
             <h1 id="dashboard-title" tabindex="-1">Welcome, <span id="user-name"></span><span class="heading-dot">.</span></h1>
-            <p class="muted">Your apps and authenticator, together.</p>
+            <p class="muted">Both factors verified. Your authenticator and saved apps are below.</p>
           </div>
-          <button id="add-app-button" class="primary add-app-button" type="button">Add app <span aria-hidden="true">+</span></button>
+          <button id="add-app-button" class="primary add-app-button" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add app</button>
         </header>
-        <section class="dashboard-authenticator" aria-label="Your authenticator">
-          <span class="mini-icon" aria-hidden="true"><svg><use href="#icon-phone"/></svg></span>
+
+        <section class="authenticator" aria-label="Your authenticator">
+          <span class="mini-icon" aria-hidden="true"><svg class="icon"><use href="#i-phone"/></svg></span>
           <div class="authenticator-info">
             <strong id="dashboard-phone-name">Android phone</strong>
             <p id="dashboard-phone-detail">Ready for your next sign-in</p>
@@ -247,81 +259,85 @@
           <p id="session-time" class="dashboard-session">Both factors verified for this session.</p>
           <button id="dashboard-replace-phone-button" class="secondary dashboard-replace-phone-button" type="button">Connect a different phone</button>
         </section>
+
         <section class="connected-apps" aria-labelledby="connected-apps-title">
           <div class="connected-apps-heading">
             <h2 id="connected-apps-title">Connected apps</h2>
             <span id="site-count" class="site-count">0 apps</span>
           </div>
           <ul id="connected-sites" class="connected-sites"></ul>
-          <div id="no-connected-sites" class="apps-empty" hidden>
-            <span class="mini-icon" aria-hidden="true"><svg><use href="#icon-key"/></svg></span>
-            <h3>Your apps belong here.</h3>
-            <p>Add your first app to start your list.</p>
+          <div id="no-connected-sites" class="apps-empty panel" hidden>
+            <span class="mini-icon" aria-hidden="true"><svg class="icon"><use href="#i-apps"/></svg></span>
+            <h3>No apps yet</h3>
+            <p>Save the apps you sign in to with Nearkey. Names and websites only; no credentials.</p>
           </div>
-          <div class="add-app-bottom">
-            <button id="add-app-plus" class="add-app-plus" type="button" aria-label="Add an app">+</button>
-            <span>Add an app</span>
-          </div>
+          <button id="add-app-plus" class="add-tile" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add an app</span></button>
         </section>
       </section>
-      <dialog id="replace-phone-dialog" class="app-dialog phone-dialog" aria-labelledby="replace-phone-title" aria-describedby="replace-phone-description">
+
+      <dialog id="replace-phone-dialog" class="app-dialog" aria-labelledby="replace-phone-title" aria-describedby="replace-phone-description">
         <div class="app-dialog-heading">
-          <div>
-            <p class="eyebrow">YOUR AUTHENTICATOR</p>
-            <h2 id="replace-phone-title">Connect a different phone</h2>
-          </div>
+          <h2 id="replace-phone-title">Connect a different phone</h2>
         </div>
         <p id="replace-phone-description" class="muted">Verify your current phone, then scan a setup QR code with the phone you want to connect.</p>
         <p id="replace-phone-error" class="notice" role="status" hidden></p>
-        <div class="phone-dialog-actions">
+        <div class="dialog-actions">
           <button id="replace-phone-close" class="secondary" type="button">Cancel</button>
-          <button id="replace-phone-confirm" class="primary" type="button">Continue <svg aria-hidden="true"><use href="#icon-arrow"/></svg></button>
+          <button id="replace-phone-confirm" class="primary" type="button">Continue <svg class="icon arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg></button>
         </div>
       </dialog>
-      <dialog id="replacement-qr-dialog" class="app-dialog phone-dialog replacement-qr-dialog" aria-labelledby="replacement-qr-title" aria-describedby="replacement-instruction">
+
+      <dialog id="replacement-qr-dialog" class="app-dialog replacement-qr-dialog" aria-labelledby="replacement-qr-title" aria-describedby="replacement-instruction">
         <div class="app-dialog-heading">
-          <div>
-            <p class="eyebrow">CONNECT YOUR NEW PHONE</p>
-            <h2 id="replacement-qr-title">Scan with your new phone</h2>
-          </div>
+          <h2 id="replacement-qr-title">Scan with your new phone</h2>
         </div>
-        <p class="muted">Open Nearkey on your new phone, scan this code, then tap “Enroll phone.” Keep your current phone until the change is complete.</p>
+        <p class="muted">Open Nearkey on your new phone, scan this code, then tap “Enroll phone”. Your current phone stays enrolled until the change completes.</p>
         <div class="pairing replacement-pairing">
-          <div id="replacement-qr" class="pair-qr"></div>
+          <div id="replacement-qr" class="pair-qr panel"></div>
           <p id="replacement-instruction" class="pair-instruction" role="status"></p>
           <p id="replacement-time" class="fineprint"></p>
           <details id="replacement-manual" class="pair-manual">
-            <summary>Enter details manually</summary>
-            <label for="replacement-code">Enrollment code</label>
-            <input id="replacement-code" readonly spellcheck="false" autocomplete="off">
-            <label for="replacement-origin">Nearkey server URL</label>
-            <input id="replacement-origin" readonly spellcheck="false" autocomplete="off">
+            <summary>Enter details manually<svg class="icon chevron" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+            <div class="field">
+              <label for="replacement-code">Enrollment code</label>
+              <input id="replacement-code" readonly spellcheck="false" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="replacement-origin">Nearkey server URL</label>
+              <input id="replacement-origin" readonly spellcheck="false" autocomplete="off">
+            </div>
           </details>
         </div>
-        <div class="phone-dialog-actions">
+        <div class="dialog-actions">
           <button id="replacement-cancel" class="secondary" type="button">Cancel</button>
-          <button id="replacement-refresh" class="primary" type="button">Get a new QR code</button>
+          <button id="replacement-refresh" class="primary" type="button">Get a new QR code <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
         </div>
       </dialog>
+
       <dialog id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title">
         <div class="app-dialog-heading">
-          <div>
-            <p class="eyebrow">YOUR APP LIST</p>
-            <h2 id="app-dialog-title">Add an app</h2>
-          </div>
-          <button id="app-dialog-close" class="dialog-close" type="button" aria-label="Close add app form">×</button>
+          <h2 id="app-dialog-title">Add an app</h2>
+          <button id="app-dialog-close" class="icon-button" type="button" aria-label="Close add app form"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
         </div>
         <p class="muted">Save an app name and an optional website to your list.</p>
         <form id="app-form">
-          <label for="app-name">App name</label>
-          <input id="app-name" name="name" required maxlength="80" autocomplete="off" placeholder="e.g. My workspace">
-          <label for="app-url">Website <span class="optional-label">Optional</span></label>
-          <input id="app-url" name="url" type="url" maxlength="2048" autocomplete="url" placeholder="https://example.com">
+          <div class="field">
+            <label for="app-name">App name</label>
+            <input id="app-name" name="name" required maxlength="80" autocomplete="off" placeholder="e.g. Team workspace">
+          </div>
+          <div class="field">
+            <label for="app-url">Website <span class="optional-label">Optional</span></label>
+            <input id="app-url" name="url" type="url" maxlength="2048" autocomplete="url" placeholder="https://example.com">
+          </div>
           <p id="app-form-error" class="notice" role="status" hidden></p>
-          <button id="app-save" class="primary" type="submit">Save app <svg><use href="#icon-arrow"/></svg></button>
+          <button id="app-save" class="primary" type="submit">Save app <svg class="icon arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg></button>
         </form>
       </dialog>
     </main>
-    <footer><span>NEARKEY <span class="footer-divider">/</span> SECURITY WITHIN REACH</span><span>Designed around your presence.</span></footer>
+
+    <footer>
+      <span>Nearkey</span>
+      <span>In-memory demo. Restarting the server resets enrollment and saved apps.</span>
+    </footer>
   </body>
 </html>

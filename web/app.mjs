@@ -133,7 +133,7 @@ function renderDebug() {
   if (state && !flow.run && diagnostics.endedAt === null) diagnostics.endedAt = performance.now();
   const elapsed = diagnostics.startedAt === null ? 0 : ((diagnostics.endedAt ?? performance.now()) - diagnostics.startedAt) / 1000;
   $('debug-elapsed').textContent = `${elapsed.toFixed(1)}s`;
-  $('debug-deadline').textContent = state && flow.run ? `${Math.max(0, (state.challenge.expiresAt - Date.now()) / 1000).toFixed(1)}s` : '—';
+  $('debug-deadline').textContent = state && flow.run ? `${Math.max(0, (state.challenge.expiresAt - Date.now()) / 1000).toFixed(1)}s` : 'Not running';
   if (state?.message) observeDebug('flow-message', state.message);
 }
 
@@ -203,7 +203,7 @@ function renderPage(pending) {
   $('login-view').hidden = page !== 'login';
   $('auth-view').hidden = page !== 'loading';
   $('dashboard-view').hidden = page !== 'dashboard';
-  document.title = `Nearkey — ${page === 'login' ? 'Set up your account' : page === 'loading' ? 'Set up your phone' : 'Your apps'}`;
+  document.title = `${page === 'login' ? 'Sign in' : page === 'loading' ? 'Set up your phone' : 'Your apps'} - Nearkey`;
   if (!restoringSession) {
     // Dashboard section anchors remain available once both factors are verified.
     const section = page === 'dashboard' && ['#overview', '#activity', '#how-it-works'].includes(location.hash);
@@ -240,8 +240,8 @@ function renderPage(pending) {
     if (index + 1 === step) item.setAttribute('aria-current', 'step');
     else item.removeAttribute('aria-current');
   });
-  $('wizard-step-label').textContent = restoringSession ? 'SETUP / CHECKING YOUR SESSION'
-    : `STEP ${step} / ${['', 'ACCOUNT', 'ENROLL YOUR PHONE', 'VERIFY NEARBY PHONE', 'READY'][step]}`;
+  $('wizard-step-label').textContent = restoringSession ? 'Checking your session'
+    : `Step ${step} of 4: ${['', 'Account', 'Enroll your phone', 'Verify nearby phone', 'Ready'][step]}`;
   $('auth-spinner').hidden = !(restoringSession || openingDashboard || challengeBusy
     || flow.run && ['waiting', 'connecting', 'submitting'].includes(state?.phase));
   if (visiblePage !== page) {
