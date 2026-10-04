@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private var pendingEnd = 0L
     private var ble: BlePeripheral? = null
     private var permissionAction: (() -> Unit)? = null
+    private var permissionRequested = false
     private var readyInFlight: String? = null
     private val reconnect = Runnable { connect() }
     private val ticker = object : Runnable {
@@ -123,6 +124,7 @@ class MainActivity : Activity() {
         super.onStart()
         foreground = true
         generation++
+        handler.removeCallbacks(ticker)
         handler.post(ticker)
         updateControls()
         connect()
@@ -142,7 +144,15 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
-    override fun onDestroy() { api.close(); super.onDestroy() }
+    override fun onDestroy() {
+        foreground = false
+        generation++
+        handler.removeCallbacks(ticker)
+        handler.removeCallbacks(reconnect)
+        disconnect("Activity destroyed")
+        api.close()
+        super.onDestroy()
+    }
 
     private fun enrolled() = prefs.getString("token", null) != null
 
@@ -196,6 +206,7 @@ class MainActivity : Activity() {
 
     private fun connect() {
         if (!foreground || !enrolled() || socket != null) return
+        handler.removeCallbacks(reconnect)
         try {
             // Never generate a replacement key for an already-enrolled credential.
             key.publicKey()
@@ -228,8 +239,7 @@ class MainActivity : Activity() {
                                 pendingEnd = SystemClock.elapsedRealtime() + challenge.expiresAt - System.currentTimeMillis()
                                 displayChallenge()
                                 updateControls()
-                                if (hasPermissions()) startBluetooth(challenge)
-                                else bleText.text = "Bluetooth permission missing. Tap retry advertising to grant access."
+                                withPermissions { startBluetooth(challenge) }
                             }
                             "cancel" -> {
                                 if (pending?.id == json.getString("challengeId")) clearChallenge("Server cancelled/completed the challenge")
@@ -274,6 +284,7 @@ class MainActivity : Activity() {
     }
 
     private fun disconnect(message: String) {
+        handler.removeCallbacks(reconnect)
         val old = socket
         socket = null
         online = false
@@ -286,7 +297,10 @@ class MainActivity : Activity() {
         pending = null
         pendingEnd = 0
         readyInFlight = null
-        ble?.close(); ble = null
+        permissionAction = null
+        val peripheral = ble
+        ble = null
+        peripheral?.close()
         bleText.text = "Bluetooth: stopped · $message"
         displayChallenge()
         updateControls()
@@ -301,31 +315,53 @@ class MainActivity : Activity() {
     }
 
     private fun startBluetooth(challenge: Challenge?) {
-        if (!foreground || !enrolled()) return
-        if (challenge != null && (pending !== challenge || !online || SystemClock.elapsedRealtime() >= pendingEnd)) {
+        if (!foreground || !enrolled() || pending !== challenge) return
+        if (challenge != null && (!online || System.currentTimeMillis() >= challenge.expiresAt ||
+                SystemClock.elapsedRealtime() >= pendingEnd)) {
             clearChallenge("No live online challenge")
             return
         }
-        ble?.close()
+        if (!hasPermissions()) {
+            withPermissions { startBluetooth(challenge) }
+            return
+        }
+        val old = ble
+        ble = null
+        readyInFlight = null
+        old?.close()
         lateinit var peripheral: BlePeripheral
         peripheral = BlePeripheral(this, handler, challenge, key::sign,
-            onReady = { if (ble === peripheral && pending === challenge && challenge != null) acknowledgeReady(challenge) },
-            onStatus = { if (ble === peripheral) bleText.text = "Bluetooth: $it" },
-            onError = { if (ble === peripheral) { ble = null; bleText.text = "Bluetooth: $it" } })
+            onReady = { if (foreground && ble === peripheral && pending === challenge && challenge != null) acknowledgeReady(challenge) },
+            onStatus = { if (foreground && ble === peripheral) bleText.text = "Bluetooth: $it" },
+            onError = { if (foreground && ble === peripheral) {
+                ble = null
+                readyInFlight = null
+                bleText.text = "Bluetooth: $it"
+            } })
         ble = peripheral
         peripheral.start()
     }
 
     private fun acknowledgeReady(challenge: Challenge) {
         if (!foreground || !online || pending !== challenge || readyInFlight == challenge.id) return
+        if (System.currentTimeMillis() >= challenge.expiresAt || SystemClock.elapsedRealtime() >= pendingEnd) {
+            clearChallenge("Challenge expired")
+            return
+        }
+        val peripheral = ble ?: return
         val epoch = generation
-        val channel = socket
+        val channel = socket ?: return
         readyInFlight = challenge.id
         try {
             val origin = api.origin(prefs.getString("origin", "")!!)
             api.post(origin, "/api/phone/challenges/${challenge.id}/ready", JSONObject(), prefs.getString("token", null)) { result, error -> handler.post {
-                if (!foreground || generation != epoch || socket !== channel || pending !== challenge) return@post
+                if (!foreground || generation != epoch || socket !== channel || pending !== challenge ||
+                    ble !== peripheral) return@post
                 readyInFlight = null
+                if (System.currentTimeMillis() >= challenge.expiresAt || SystemClock.elapsedRealtime() >= pendingEnd) {
+                    clearChallenge("Challenge expired")
+                    return@post
+                }
                 if (result?.optBoolean("ok") != true) {
                     // Never leave an unacknowledged challenge signing after an API error.
                     clearChallenge(error ?: "Server did not acknowledge advertising readiness")
@@ -343,16 +379,27 @@ class MainActivity : Activity() {
         if (!foreground) return
         if (hasPermissions()) action()
         else {
-            permissionAction = action
-            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE), 1)
+            val epoch = generation
+            val challenge = pending
+            val channel = socket
+            permissionAction = {
+                if (foreground && generation == epoch && pending === challenge && socket === channel) action()
+            }
+            bleText.text = "Bluetooth: Nearby devices permission required"
+            if (!permissionRequested) {
+                permissionRequested = true
+                requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE), 1)
+            }
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 1) return
+        permissionRequested = false
         val action = permissionAction
         permissionAction = null
-        if (requestCode == 1 && foreground) {
+        if (foreground) {
             if (hasPermissions()) action?.invoke()
             else bleText.text = "Bluetooth access denied. Allow Nearby devices in app settings and retry."
         }
