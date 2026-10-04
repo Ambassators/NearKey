@@ -1,12 +1,9 @@
-import {api as serverApi} from './api.mjs';
-import {DemoSession} from './demo-session.mjs';
+import {api} from './api.mjs';
 import {PhoneBluetooth} from './ble.mjs';
 import {ChallengeFlow} from './challenge.mjs';
 import {EnrollmentQr} from './enrollment.mjs';
 
 const $ = id => document.getElementById(id);
-const demoSession = new DemoSession();
-const api = (path, options) => demoSession.active ? demoSession.request(path, options) : serverApi(path, options);
 const phoneLabel = (label, fallback) => label === 'Android phone' ? 'Phone' : label || fallback;
 const diagnostics = {transport: 'Idle', observed: new Map(), challenge: null, startedAt: null, endedAt: null};
 const bluetooth = new PhoneBluetooth({onProgress: stage => {
@@ -140,7 +137,7 @@ function renderDebug() {
   if (!$('debug-session')) return;
   const state = flow.state;
   const phone = account?.phone || session?.setup?.phone;
-  const sessionStatus = demoSession.active ? 'Google demo session' : account ? 'Both factors verified' : session?.pending ? 'Password accepted · 2FA pending'
+  const sessionStatus = account ? 'Both factors verified' : session?.pending ? 'Primary sign-in accepted · 2FA pending'
     : loginBusy ? 'Checking session' : 'Password required';
   const phoneStatus = phone ? `${phoneLabel(phone.label, 'Enrolled phone')} · ${phone.online ? 'server online' : 'server offline'}` : 'Not enrolled in this session';
   $('debug-session').textContent = sessionStatus;
@@ -303,8 +300,7 @@ function renderControls() {
   $('credentials-panel').hidden = pending;
   $('factor-panel').hidden = !pending;
   $('login-button').disabled = loginBusy;
-  $('google-signin').disabled = false;
-  $('apple-signin').disabled = loginBusy;
+  $('google-signin').disabled = $('apple-signin').disabled = loginBusy;
   $('login-button').firstChild.textContent = loginBusy ? 'Signing in… ' : 'Continue ';
   $('username').disabled = loginBusy;
   $('password').disabled = loginBusy;
@@ -344,7 +340,6 @@ function renderControls() {
   $('replace-phone-button').hidden = !pending || !phone;
   $('replace-phone-button').disabled = chooserBusy || bluetooth.busy || replacementBusy;
   $('dashboard-replace-phone-button').disabled = !account || appBusy || replacementBusy;
-  $('dashboard-replace-phone-button').hidden = demoSession.active;
   $('replace-phone-confirm').disabled = $('replace-phone-close').disabled = replacementBusy;
   $('replacement-refresh').disabled = $('replacement-cancel').disabled = replacementBusy;
   replacementQr.render(account ? replacementPairing : null, replacementPairing?.origin || location.origin);
@@ -397,8 +392,8 @@ function appItem(app) {
 
 function renderAccount() {
   if (!account) return;
-  $('dashboard-phone-name').textContent = demoSession.active ? 'Google demo' : phoneLabel(account.phone?.label, 'Phone key');
-  $('dashboard-phone-status').textContent = demoSession.active ? 'Signed in' : account.phone?.online ? 'Online' : 'Enrolled';
+  $('dashboard-phone-name').textContent = phoneLabel(account.phone?.label, 'Phone key');
+  $('dashboard-phone-status').textContent = account.phone?.online ? 'Online' : 'Enrolled';
   const apps = account.apps || [];
   const nextKey = JSON.stringify(apps);
   if (appsKey !== nextKey) {
@@ -450,7 +445,7 @@ async function enterDashboard() {
 
 function schedulePoll(currentEpoch) {
   clearTimeout(pollTimer);
-  if (!demoSession.active && (session?.pending || account)) pollTimer = setTimeout(() => void poll(currentEpoch), 3000);
+  if (session?.pending || account) pollTimer = setTimeout(() => void poll(currentEpoch), 3000);
 }
 
 async function poll(currentEpoch) {
@@ -516,7 +511,7 @@ function tick() {
   renderControls();
 }
 
-// Restore or create the password-accepted sign-in flow.
+// Restore or create the primary sign-in flow, awaiting phone verification.
 async function acceptSession(result) {
   session = result;
   $('password').value = '';
@@ -560,29 +555,26 @@ async function startChallenge() {
 
 // User actions: Bluetooth selection stays inside a fresh click activation.
 $('google-signin').addEventListener('click', () => {
-  resetLifetime();
-  loginBusy = false;
-  session = demoSession.signIn();
-  account = demoSession.account();
-  $('password').value = '';
-  notice();
-  renderAccount();
-  $('dashboard-title').focus({preventScroll: true});
+  void startLogin('/api/login/google', {});
 });
 $('apple-signin').addEventListener('click', () => {
   if (!loginBusy) notice('Apple sign-in isn’t available in this demo.');
 });
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
+  await startLogin('/api/login', {username: $('username').value, password: $('password').value});
+});
+
+async function startLogin(path, body) {
   if (loginBusy || session?.pending || account) return;
   loginBusy = true;
   const currentEpoch = epoch;
   notice();
   renderControls();
   try {
-    const result = await api('/api/login', {
+    const result = await api(path, {
       method: 'POST',
-      body: {username: $('username').value, password: $('password').value},
+      body,
       signal: lifetime.signal,
     });
     if (epoch !== currentEpoch) return;
@@ -596,7 +588,7 @@ $('login-form').addEventListener('submit', async event => {
     if (epoch === currentEpoch) loginBusy = false;
     renderControls();
   }
-});
+}
 
 async function logout({announce = true} = {}) {
   if (loginBusy || (!session?.pending && !account)) return;

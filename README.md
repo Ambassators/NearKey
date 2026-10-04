@@ -4,11 +4,11 @@
 
 NearKey is a two-factor authentication provider demo. Its setup wizard guides you through password sign-in, Android phone enrollment and Bluetooth verification. The dashboard then shows your saved app list.
 
-**Continue with Google** instantly opens a browser-only demo dashboard, without Google OAuth, credentials, Bluetooth, or a server request. The demo session and its app list survive refreshes in the same tab when browser storage is available. Signing out ends the demo session; demo apps remain available for the next Google demo sign-in in that tab.
+**Continue with Google** is a fake sign-in button that skips the password and opens the same phone enrollment and Bluetooth authentication flow. It does not use Google OAuth. The dashboard opens only after the phone verification succeeds.
 
 A correct password opens a pending login. The provider dashboard and account API stay locked until the phone completes the Bluetooth factor. On the first login, enroll your phone and grant browser Bluetooth permission before verification.
 
-The browser has three pages: `#/login` for the password, `#/loading` for phone enrollment and Bluetooth authentication, and `#/dashboard` for the verified account and app list. Refreshing resumes the server-confirmed step; changing the route cannot skip verification.
+The browser has three pages: `#/login` for password or fake Google sign-in, `#/loading` for phone enrollment and Bluetooth authentication, and `#/dashboard` for the verified account and app list. Refreshing resumes the server-confirmed step; changing the route cannot skip verification.
 
 “Connect a different phone” is available during verification and on the dashboard. A pending login must verify the current phone first; a verified session can generate a replacement QR immediately. The current phone stays enrolled until the new phone completes enrollment with a valid key proof. Refreshing or cancelling the QR does not remove it. Completing replacement revokes the old phone and other browser sessions, preserves the app list, and requires nearby verification of the new phone before reopening the dashboard. A lost current phone still requires offline demo recovery; the button cannot bypass the existing second factor.
 

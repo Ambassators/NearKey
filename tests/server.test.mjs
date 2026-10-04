@@ -364,6 +364,30 @@ test('default admin credentials open only a pending login', async (t) => {
   assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}})).status, 401);
 });
 
+test('fake Google skips the password but requires phone verification before dashboard access', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.request('/api/login/google', {method: 'POST', body: {}, headers: {Origin: 'https://evil.example'}})).status, 403);
+  assert.equal((await f.request('/api/login/google', {method: 'POST', body: {authenticated: true}})).status, 400);
+  const login = await f.request('/api/login/google', {method: 'POST', body: {}});
+  assert.equal(login.status, 200);
+  assert.equal(login.data.authenticated, false);
+  assert.equal(login.data.pending, true);
+  assert.equal(login.data.user, null);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await f.request('/api/session', {cookie})).data.pending, true);
+  assert.equal((await f.request('/api/account', {cookie})).status, 403);
+  assert.equal((await f.request('/api/apps', {method: 'POST', body: {name: 'App'}, cookie})).status, 403);
+  const phone = await f.pair(cookie);
+  await f.connect(phone.deviceToken);
+  const challenge = await f.challenge(phone);
+  assert.equal((await f.complete(phone, challenge)).data.authenticated, true);
+  assert.equal((await f.request('/api/account', {cookie})).status, 200);
+  const again = await f.request('/api/login/google', {method: 'POST', body: {}, cookie});
+  assert.equal(again.data.authenticated, false, 'every Google sign-in requires phone verification again');
+  assert.equal(again.data.setup.phone.id, phone.phoneId);
+  assert.equal((await f.request('/api/account', {cookie})).status, 401, 'the previous session is revoked');
+});
+
 test('password verifies only first factor; pending session cannot access provider dashboard', async (t) => {
   const f = await fixture(t);
   assert.deepEqual((await f.request('/api/session')).data, {authenticated: false, pending: false,

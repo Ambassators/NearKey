@@ -441,18 +441,24 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
         json(res, 200, {ok: true}, {'Set-Cookie': cookie()});
         return;
       }
-      if (req.method === 'POST' && ['/api/login', '/api/phones/enroll'].includes(route)) {
+      if (req.method === 'POST' && ['/api/login', '/api/login/google', '/api/phones/enroll'].includes(route)) {
         rateLimit(req, 'credentials', 10);
       }
-      if (req.method === 'POST' && route === '/api/login') {
+      if (req.method === 'POST' && ['/api/login', '/api/login/google'].includes(route)) {
         const body = await readJson(req);
-        exactFields(body, ['username', 'password']);
-        if (typeof body.username !== 'string' || body.username.length > 80
-            || typeof body.password !== 'string' || body.password.length > 256) {
-          fail(400, 'invalid_credentials', 'Invalid credential format');
+        if (route === '/api/login/google') {
+          // The fake Google button substitutes for the password in this demo.
+          // Its session still requires the enrolled phone's Bluetooth proof.
+          exactFields(body, []);
+        } else {
+          exactFields(body, ['username', 'password']);
+          if (typeof body.username !== 'string' || body.username.length > 80
+              || typeof body.password !== 'string' || body.password.length > 256) {
+            fail(400, 'invalid_credentials', 'Invalid credential format');
+          }
+          const passwordOK = await passwordMatches(body.password, credentials);
+          if (!passwordOK || body.username !== username) fail(401, 'invalid_credentials', 'Incorrect username or password');
         }
-        const passwordOK = await passwordMatches(body.password, credentials);
-        if (!passwordOK || body.username !== username) fail(401, 'invalid_credentials', 'Incorrect username or password');
         sweep();
         const old = sessionToken(req);
         if (sessions.has(old)) revokeSession(old);
