@@ -142,7 +142,11 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
 
   const cookie = (token = '') => `nearkey_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token ? SESSION_TTL_MS / 1000 : 0}${publicOrigin.startsWith('https:') ? '; Secure' : ''}`;
   function sendPhone(message, socket = phone?.socket) {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    // A transport failure must not turn an already committed API operation into a 500.
+    try {
+      socket.send(JSON.stringify(message), (error) => { if (error) socket.terminate(); });
+    } catch { socket.terminate(); }
   }
   function endChallenge(record, status) {
     if (!pending(record)) return;
@@ -196,7 +200,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   }
   function requirePhone(req) {
     // Native phone requests do not need browser cookies or CORS.
-    if (req.headers.origin) fail(403, 'origin_rejected', 'Phone channel is native-app only');
+    if (req.headers.origin !== undefined) fail(403, 'origin_rejected', 'Phone channel is native-app only');
     if (!phone || req.headers.authorization !== `Bearer ${phone.deviceToken}`) {
       fail(401, 'phone_auth_required', 'Valid phone Authorization header required');
     }
@@ -305,13 +309,17 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
       const ready = /^\/api\/phone\/challenges\/([a-f0-9-]{36})\/ready$/.exec(route);
       if (req.method === 'POST' && ready) {
         const owner = requirePhone(req);
+        const channel = owner.socket;
         const body = await readJson(req);
         exactFields(body, []);
         sweep();
         const record = challenges.get(ready[1]);
         if (!record || record.challenge.phoneId !== owner.id) fail(404, 'challenge_not_found', 'Challenge not found');
         requirePending(record);
-        if (owner.socket?.readyState !== WebSocket.OPEN) fail(409, 'phone_offline', 'Connect the foreground phone channel first');
+        // An ACK whose body was still uploading when the channel was replaced is stale.
+        if (phone !== owner || owner.socket !== channel || channel?.readyState !== WebSocket.OPEN) {
+          fail(409, 'phone_offline', 'Connect the foreground phone channel first');
+        }
         record.phoneReady = true;
         record.status = 'waiting_bluetooth';
         json(res, 200, {ok: true});
@@ -429,23 +437,29 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => {});
     try {
+      if (closing) fail(503, 'server_closing', 'Server is shutting down');
       sweep();
       rateLimit(req, 'upgrade', 20);
-      if (req.url !== '/api/phone-channel' || req.headers.origin) fail(403, 'channel_rejected', 'Native phone channel only');
+      if (req.url !== '/api/phone-channel' || req.headers.origin !== undefined) {
+        fail(403, 'channel_rejected', 'Native phone channel only');
+      }
       const owner = requirePhone(req);
       wss.handleUpgrade(req, socket, head, (ws) => {
         const previous = owner.socket;
-        if (previous?.readyState === WebSocket.OPEN) {
+        if (previous && previous.readyState !== WebSocket.CLOSED) {
           const record = challenges.get(activeId);
           if (pending(record)) sendPhone({type: 'cancel', challengeId: record.challenge.id}, previous);
-          previous.close(1000, 'Channel replaced');
-          setTimeout(() => previous.terminate(), 1000).unref();
+          if (previous.readyState === WebSocket.OPEN) previous.close(1000, 'Channel replaced');
+          const replacementTimer = setTimeout(() => previous.terminate(), 1000);
+          replacementTimer.unref();
+          previous.once('close', () => clearTimeout(replacementTimer));
         }
         owner.socket = ws;
         ws.alive = true;
         ws.on('error', () => {});
         ws.on('pong', () => { ws.alive = true; });
         ws.on('message', (data, binary) => {
+          if (owner.socket !== ws || ws.readyState !== WebSocket.OPEN) return;
           let message;
           try { message = JSON.parse(data.toString('utf8')); } catch { ws.close(1008, 'Invalid message'); return; }
           if (binary || !message || Array.isArray(message) || message.type !== 'ping' || Object.keys(message).length !== 1) {
@@ -461,27 +475,31 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
           const record = challenges.get(activeId);
           if (pending(record)) { record.phoneReady = false; record.status = 'waiting_phone'; }
         });
-        sendPhone({type: 'ready', phoneId: owner.id});
+        sendPhone({type: 'ready', phoneId: owner.id}, ws);
+        sweep();
         const record = challenges.get(activeId);
         if (pending(record)) {
           record.phoneReady = false;
           record.status = 'waiting_phone';
-          sendPhone({type: 'challenge', challenge: record.challenge});
+          sendPhone({type: 'challenge', challenge: record.challenge}, ws);
         }
       });
     } catch (error) {
-      const status = error instanceof ApiError ? error.status : 400;
-      const body = JSON.stringify({error: error.error || 'channel_rejected', message: error.message || 'Channel rejected'});
-      socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      const known = error instanceof ApiError;
+      const status = known ? error.status : 400;
+      const body = JSON.stringify({error: known ? error.error : 'channel_rejected',
+        message: known ? error.message : 'Channel rejected'});
+      socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`, () => socket.destroy());
     }
   });
   const expiryTimer = setInterval(sweep, 1000);
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
-      if (!ws.alive) { ws.terminate(); continue; }
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      if (!ws.alive || phone?.socket !== ws) { ws.terminate(); continue; }
       ws.alive = false;
       ws.messageCount = 0;
-      ws.ping();
+      try { ws.ping(); } catch { ws.terminate(); }
     }
   }, 30_000);
   expiryTimer.unref();
