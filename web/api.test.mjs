@@ -2,7 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {api, ApiError} from './api.mjs';
-import {amountCents, money} from './format.mjs';
 
 function mockFetch(t, implementation) { t.mock.method(globalThis, 'fetch', implementation); }
 const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers: {'Content-Type': 'application/json'}});
@@ -25,10 +24,10 @@ test('server JSON failures retain human explanation and authentication status', 
 
 test('offline / malformed responses recover with a visible connection explanation', async t => {
   mockFetch(t, async () => { throw new TypeError('fetch failed'); });
-  await assert.rejects(api('/api/account'), /Cannot reach the bank server/);
+  await assert.rejects(api('/api/account'), /Cannot reach the NearKey server/);
   t.mock.restoreAll();
   mockFetch(t, async () => new Response('not JSON'));
-  await assert.rejects(api('/api/account'), /Cannot reach the bank server/);
+  await assert.rejects(api('/api/account'), /Cannot reach the NearKey server/);
 });
 
 test('timed out fetch aborts its signal and rejects instead of freezing controls', async t => {
@@ -58,12 +57,8 @@ test('session lifetime cancellation aborts in-flight fetch and removes the paren
   assert.equal(removes, 1);
 });
 
-test('USD input converts decimal strings to integer cents without arbitrary limits', () => {
-  for (const [input, expected] of [['25', 2500], ['25.00', 2500], ['0.01', 1], ['1.2', 120], [' 12.34 ', 1234], ['100000', 10_000_000]]) {
-    assert.equal(amountCents(input), expected);
-  }
-  for (const invalid of ['0', '-1', '1e2', 'NaN', 'Infinity', '1,000', '0.001', '1.', '', '9999999999999999999']) {
-    assert.throws(() => amountCents(invalid));
-  }
-  assert.equal(money(1234), '$12.34');
+test('password-only access preserves the server verification-required error', async t => {
+  mockFetch(t, async () => json({error: 'verification_required', message: 'Complete Bluetooth verification to sign in'}, 403));
+  await assert.rejects(api('/api/account'), error => error instanceof ApiError
+    && error.status === 403 && error.code === 'verification_required');
 });

@@ -7,13 +7,13 @@ import java.nio.charset.CodingErrorAction
 import java.util.Base64
 import java.util.UUID
 
-/** Literal version-1 wire encodings from shared/protocol.mjs. */
+/** Literal version-2 login wire encodings from shared/protocol.mjs. */
 object Protocol {
-    const val VERSION = 1
+    const val VERSION = 2
     const val SERVICE = "c7c50001-6c6c-4e4b-9b89-9e96a12a9f01"
     const val REQUEST = "c7c50002-6c6c-4e4b-9b89-9e96a12a9f01"
     const val PROOF = "c7c50003-6c6c-4e4b-9b89-9e96a12a9f01"
-    fun approvalText(id: String, nonce: String) = "NEARKEY-PASSIVE-V1\n$id\n$nonce"
+    fun approvalText(challenge: Challenge) = "NEARKEY-LOGIN-V2\n${challenge.id}\n${challenge.nonce}\n${challenge.phoneId}\n${challenge.expiresAt}\n${challenge.username}\n${challenge.serviceName}\n${challenge.sessionId}"
     fun enrollmentText(code: String, publicKey: String) = "NEARKEY-ENROLL-V1\n$code\n$publicKey"
     fun base64(bytes: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 
@@ -37,7 +37,7 @@ object Protocol {
     }
 
     fun challenge(json: JSONObject, phoneId: String, now: Long): Challenge {
-        require(json.keys().asSequence().toSet() == setOf("v", "id", "nonce", "phoneId", "expiresAt", "operation")) {
+        require(json.keys().asSequence().toSet() == setOf("v", "id", "nonce", "phoneId", "expiresAt", "purpose", "username", "serviceName", "sessionId")) {
             "Unexpected challenge fields"
         }
         require(integer(json, "v") == VERSION.toLong()) { "Unsupported challenge version" }
@@ -47,21 +47,18 @@ object Protocol {
         require(nonce.matches(Regex("[A-Za-z0-9_-]{43}"))) { "Invalid nonce" }
         val decoded = Base64.getUrlDecoder().decode(nonce)
         require(decoded.size == 32 && base64(decoded) == nonce) { "Invalid nonce encoding" }
-        require(phoneId.isNotEmpty() && string(json, "phoneId") == phoneId) { "Challenge is for another phone" }
+        require(phoneId.isNotEmpty() && phoneId.length <= 128 && phoneId.none { it == '\n' || it == '\r' } &&
+            string(json, "phoneId") == phoneId) { "Challenge is for another phone" }
         val expiry = integer(json, "expiresAt")
         require(now >= 0 && expiry > now && expiry - now <= 60_000) { "Expired challenge or phone clock is incorrect" }
-        val operation = json.getJSONObject("operation")
-        require(operation.keys().asSequence().toSet() == setOf("recipientId", "recipientName", "amountCents", "note")) {
-            "Unexpected operation fields"
-        }
-        val amount = integer(operation, "amountCents")
-        val recipientId = string(operation, "recipientId")
-        val recipientName = string(operation, "recipientName")
-        val note = string(operation, "note")
-        require(amount > 0 && recipientId.isNotEmpty() && recipientName.isNotEmpty() && note.length <= 120) {
-            "Invalid operation"
-        }
-        return Challenge(id, nonce, phoneId, expiry, recipientId, recipientName, amount, note)
+        require(string(json, "purpose") == "login") { "Unsupported challenge purpose" }
+        val username = string(json, "username")
+        val serviceName = string(json, "serviceName")
+        val sessionId = string(json, "sessionId")
+        require(listOf(username, serviceName).all { it.isNotBlank() && it.length <= 128 &&
+            it.none { char -> char == '\n' || char == '\r' } } &&
+            sessionId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "Invalid login context" }
+        return Challenge(id, nonce, phoneId, expiry, username, serviceName, sessionId)
     }
 
     fun checkRequest(bytes: ByteArray, challenge: Challenge?, now: Long) {
@@ -91,7 +88,7 @@ object Protocol {
 }
 
 data class Challenge(val id: String, val nonce: String, val phoneId: String, val expiresAt: Long,
-    val recipientId: String, val recipientName: String, val amountCents: Long, val note: String)
+    val username: String, val serviceName: String, val sessionId: String)
 
 /** One newline-delimited frame, <=20-byte writes with response, <=1024-byte total. */
 class RequestBuffer {

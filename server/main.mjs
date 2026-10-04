@@ -13,8 +13,8 @@ app.server.on('error', (error) => {
   void app.close().then(() => { process.exitCode = 1; });
 });
 app.server.listen(port, host, () => {
-  console.log(`NearKey fictional demo listening on ${host}:${port}`);
-  console.log('In-memory demo: restart resets account, sessions, enrolled phone and transfers.');
+  console.log(`NearKey 2FA demo listening on ${host}:${port}`);
+  console.log('In-memory demo: restart resets sessions, enrolled phone and sign-in activity.');
 });
 let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM']) {

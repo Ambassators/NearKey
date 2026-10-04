@@ -3,11 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPairSync, sign, verify} from 'node:crypto';
 import {PhoneBluetooth, requestChunks, parseProof} from './ble.mjs';
-import {BLE_SERVICE_UUID, BLE_REQUEST_UUID, BLE_PROOF_UUID, bleRequest, approvalText} from '../shared/protocol.mjs';
+import {CONTRACT_VERSION, BLE_SERVICE_UUID, BLE_REQUEST_UUID, BLE_PROOF_UUID, bleRequest, approvalText} from '../shared/protocol.mjs';
 
 const key = generateKeyPairSync('ec', {namedCurve: 'prime256v1'});
-const challenge = () => ({v: 1, id: 'd056d573-7739-45a3-9d8b-6ea70fded8df', nonce: 'a'.repeat(43), expiresAt: Date.now() + 60_000});
-const signatureFor = c => sign('sha256', Buffer.from(approvalText(c.id, c.nonce)), key.privateKey).toString('base64url');
+const challenge = () => ({v: CONTRACT_VERSION, id: 'd056d573-7739-45a3-9d8b-6ea70fded8df', nonce: 'a'.repeat(43), expiresAt: Date.now() + 60_000, phoneId: 'phone-id', purpose: 'login', username: 'demo', serviceName: 'NearKey', sessionId: 'b'.repeat(43)});
+const signatureFor = c => sign('sha256', Buffer.from(approvalText(c)), key.privateKey).toString('base64url');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => {
   let resolve, reject;
@@ -44,7 +44,7 @@ function phone(c, options = {}) {
       assert.equal(characteristic, BLE_PROOF_UUID);
       return {readValue: async () => {
         calls.push(['read']);
-        return options.read ? options.read() : proofView({v: 1, challengeId: c.id, signature});
+        return options.read ? options.read() : proofView({v: CONTRACT_VERSION, challengeId: c.id, signature});
       }};
     }};
   }};
@@ -79,20 +79,20 @@ function phone(c, options = {}) {
 test('full offset DataView proof preserves real P-256 DER SHA-256 base64url signature', () => {
   const c = challenge();
   const signature = signatureFor(c);
-  const value = proofView({v: 1, challengeId: c.id, signature});
+  const value = proofView({v: CONTRACT_VERSION, challengeId: c.id, signature});
   assert.ok(value.byteLength > 20);
   assert.equal(parseProof(value, c.id), signature);
-  assert.ok(verify('sha256', Buffer.from(approvalText(c.id, c.nonce)), key.publicKey, Buffer.from(signature, 'base64url')));
-  assert.equal(approvalText('id', 'nonce'), 'NEARKEY-PASSIVE-V1\nid\nnonce');
+  assert.ok(verify('sha256', Buffer.from(approvalText(c)), key.publicKey, Buffer.from(signature, 'base64url')));
+  assert.equal(approvalText(c), `NEARKEY-LOGIN-V2\n${c.id}\n${c.nonce}\n${c.phoneId}\n${c.expiresAt}\n${c.username}\n${c.serviceName}\n${c.sessionId}`);
 });
 
 test('proof rejects wrong version/id, incomplete JSON, invalid UTF-8, padding and P1363', () => {
   const c = challenge();
   const signature = signatureFor(c);
-  for (const proof of [{v: 2, challengeId: c.id, signature}, {v: 1, challengeId: 'another', signature},
-    {v: 1, challengeId: c.id, signature: `${signature}=`}, {v: 1, challengeId: c.id, signature: '-'},
-    {v: 1, challengeId: c.id, signature: Buffer.alloc(64).toString('base64url')},
-    {v: 1, challengeId: c.id, signature: Buffer.from([0x30, 6, 2, 1, 0, 2, 1, 1]).toString('base64url')}]) {
+  for (const proof of [{v: 1, challengeId: c.id, signature}, {v: CONTRACT_VERSION, challengeId: 'another', signature},
+    {v: CONTRACT_VERSION, challengeId: c.id, signature: `${signature}=`}, {v: CONTRACT_VERSION, challengeId: c.id, signature: '-'},
+    {v: CONTRACT_VERSION, challengeId: c.id, signature: Buffer.alloc(64).toString('base64url')},
+    {v: CONTRACT_VERSION, challengeId: c.id, signature: Buffer.from([0x30, 6, 2, 1, 0, 2, 1, 1]).toString('base64url')}]) {
     assert.throws(() => parseProof(proofView(proof), c.id));
   }
   assert.throws(() => parseProof(new DataView(new TextEncoder().encode('{').buffer), c.id), /malformed/);
@@ -212,14 +212,14 @@ test('mock Bluetooth timeout stops work, disconnects late native operations and 
   await assert.rejects(bluetooth.prove(c), /timed out/);
   assert.equal(mock.device.gatt.connected, false);
   assert.equal(bluetooth.busy, true);
-  read.resolve(proofView({v: 1, challengeId: c.id, signature: mock.signature}));
+  read.resolve(proofView({v: CONTRACT_VERSION, challengeId: c.id, signature: mock.signature}));
   await tick();
   assert.equal(bluetooth.busy, false);
 });
 
 test('mismatched proof fails and always disconnects', async () => {
   const c = challenge();
-  const mock = phone(c, {read: () => proofView({v: 1, challengeId: 'wrong', signature: signatureFor(c)})});
+  const mock = phone(c, {read: () => proofView({v: CONTRACT_VERSION, challengeId: 'wrong', signature: signatureFor(c)})});
   const bluetooth = new PhoneBluetooth({secure: true, storage: storage(mock.device.id), bluetooth: {
     requestDevice() {}, getDevices: async () => [mock.device],
   }});

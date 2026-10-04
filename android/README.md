@@ -1,7 +1,7 @@
-# NearKey passive Android demo
+# NearKey Android authenticator
 
-Foreground native Kotlin app for **fictional transfers**, implementing the unchanged
-[`shared/PROTOCOL.md`](../shared/PROTOCOL.md) version 1. No Compose, background
+Foreground native Kotlin app for **Bluetooth login verification**, implementing
+[`shared/PROTOCOL.md`](../shared/PROTOCOL.md) version 2. No Compose, background
 service, phone confirmation, biometrics, simulator or manual proof path.
 
 ## Build
@@ -40,7 +40,7 @@ minimum phone API is 26; Java/Kotlin bytecode targets 17 while the build uses JD
    The release variant rejects HTTP; **debug only** permits HTTP for local testing.
    `localhost` on the phone is the phone itself, not the Mac. TLS trust and hostname
    checks are not disabled. The app contains no deployment URL or credentials.
-2. Password-login in Mac Chromium, create enrollment and paste its pairing code
+2. Start a pending password login in Mac Chromium, create enrollment and paste its pairing code
    into the app. Tap **Enroll phone**. The P-256 private key lives in
    AndroidKeyStore, non-exportable, without user-authentication requirements.
    Hardware backing is best effort, reported from KeyInfo, never guaranteed.
@@ -50,8 +50,8 @@ minimum phone API is 26; Java/Kotlin bytecode targets 17 while the build uses JD
    **Advertise setup for 60 seconds**, granting Nearby devices permissions if
    prompted, then explicitly click the browser's first-time Bluetooth chooser.
    Setup mode advertises only the service UUID and **cannot sign**.
-4. Create a fictional transfer in the browser. Only an authenticated phone-channel
-   challenge enables signing. The app displays immutable metadata and countdown,
+4. Continue login verification in the browser. Only an authenticated phone-channel
+   login challenge enables signing. The app displays the service, account and countdown,
    advertises for the remaining server deadline, and POSTs readiness only after
    Android's `onStartSuccess`. The browser tries its remembered permitted device
    or offers its user-gesture chooser, writes <=20-byte newline JSON chunks with
@@ -60,7 +60,9 @@ minimum phone API is 26; Java/Kotlin bytecode targets 17 while the build uses JD
 
 The request buffer is bounded at 1024 bytes. ID, nonce, version, type, server
 pending state and wall/monotonic deadlines are checked before signing the exact
-UTF-8 `NEARKEY-PASSIVE-V1\n{id}\n{nonce}` text. Proof exists before the final write
+UTF-8 version 2 login text defined in the shared contract, binding challenge ID,
+nonce, phone ID, expiry, username, service name and pending-session identifier.
+The prefix is `NEARKEY-LOGIN-V2`; enrollment retains `NEARKEY-ENROLL-V1`. Proof exists before the final write
 ACK. GATT reads support offsets and MTU-1 slices, including an empty terminal
 read; the server stays open while a central reads after advertising stops.
 Only one central is accepted. Disconnect clears buffers/proof and readvertises
@@ -87,12 +89,13 @@ same offline reset, not password-only replacement.
 `ProtocolTest` exercises domain texts, challenge/request rejection, setup/expiry,
 chunk bounds and long-read slices. It also produces ephemeral **JVM** P-256
 vectors; `tools/check-contract.mjs` verifies them with Node against the actual
-parent-owned shared module. These tests do not exercise AndroidKeyStore, Bluetooth,
+shared module. These tests do not exercise AndroidKeyStore, Bluetooth,
 permissions, lifecycle on a physical phone, or the sibling server end-to-end.
 
 **Manual hardware gate (not tested from SSH):** install the APK on a peripheral-
 capable phone and use Mac Chromium. Verify first chooser permission, remembered
-reconnect and chooser fallback, one transfer only, wrong phone/nonce rejection,
+reconnect and chooser fallback, dashboard locked before verification, one login
+completion only, wrong phone/nonce/session context rejection,
 long proof reads at default MTU, disconnect/retry, cancel/logout/expiry, app
 background/channel-loss cleanup, permission denial, disabled radio and a phone
 without peripheral support. Server API/replay/session tests belong to the server

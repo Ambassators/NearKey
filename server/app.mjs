@@ -9,13 +9,10 @@ import { randomToken, parsePublicKey, verifyProof, passwordRecord, passwordMatch
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SESSION_TTL_MS = 8 * 60 * 60_000;
+const PENDING_SESSION_TTL_MS = 10 * 60_000;
 const PAIRING_TTL_MS = 5 * 60_000;
 const BODY_LIMIT = 4096;
 const USER = Object.freeze({id: 'demo', name: 'Demo User'});
-const RECIPIENTS = Object.freeze([
-  Object.freeze({id: 'alex', name: 'Alex Morgan'}),
-  Object.freeze({id: 'sam', name: 'Sam Rivera'}),
-]);
 const pending = (record) => record && ['waiting_phone', 'waiting_bluetooth'].includes(record.status);
 
 class ApiError extends Error {
@@ -122,12 +119,28 @@ async function staticFiles(root) {
     files.set(`/${name}`, asset);
     if (name === 'index.html') files.set('/', asset);
   }
+  const fonts = path.join(web, 'fonts');
+  let fontDirectory;
+  try { fontDirectory = await lstat(fonts); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (fontDirectory?.isDirectory()) {
+    for (const name of ['dm-sans.ttf', 'manrope.ttf']) {
+      const file = path.join(fonts, name);
+      let entry;
+      try { entry = await lstat(file); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (entry?.isFile()) files.set(`/web/fonts/${name}`, {file, type: 'font/ttf'});
+    }
+  }
   return files;
 }
 
 export async function createApp({publicOrigin = 'http://localhost:5173', username = 'demo',
   password = 'demo-passive-key', now = Date.now, root = ROOT} = {}) {
   validateOrigin(publicOrigin);
+  if (typeof username !== 'string' || !username.trim() || username.length > 80 || /[\r\n]/.test(username)) {
+    throw new Error('Demo username must contain 1–80 characters without line breaks');
+  }
   const credentials = await passwordRecord(password);
   const assets = await staticFiles(root);
   const sessions = new Map();
@@ -136,8 +149,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   let pairing = null;
   let phone = null;
   let activeId = null;
-  let balanceCents = 100000;
-  const transactions = [];
+  const activity = [];
   let closing = false;
 
   const cookie = (token = '') => `nearkey_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token ? SESSION_TTL_MS / 1000 : 0}${publicOrigin.startsWith('https:') ? '; Secure' : ''}`;
@@ -198,6 +210,21 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
     if (!sessions.has(token)) fail(401, 'session_required', 'Please log in');
     return token;
   }
+  function requireAuthenticated(token) {
+    if (sessions.get(token)?.verifiedAt == null) {
+      fail(403, 'verification_required', 'Complete Bluetooth verification to finish signing in');
+    }
+  }
+  const phoneStatus = () => phone ? {id: phone.id, label: phone.label,
+    online: phone.socket?.readyState === WebSocket.OPEN} : null;
+  function sessionState(token) {
+    const session = sessions.get(token);
+    const authenticated = Boolean(session && session.verifiedAt !== null);
+    const record = session ? challenges.get(session.challengeId) : null;
+    return {authenticated, pending: Boolean(session && !authenticated), user: authenticated ? USER : null,
+      setup: session ? {phone: phoneStatus()} : null, challenge: record?.challenge || null,
+      challengeStatus: record?.status || null};
+  }
   function requirePhone(req) {
     // Native phone requests do not need browser cookies or CORS.
     if (req.headers.origin !== undefined) fail(403, 'origin_rejected', 'Phone channel is native-app only');
@@ -238,7 +265,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         const asset = assets.get(route);
         let data;
         try { data = await readFile(asset.file); } catch { fail(404, 'not_found', 'Asset not found'); }
-        res.writeHead(200, {'Content-Type': `${asset.type}; charset=utf-8`, 'Cache-Control': 'no-store',
+        res.writeHead(200, {'Content-Type': asset.type.startsWith('font/') ? asset.type : `${asset.type}; charset=utf-8`,
+          'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin',
           'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});
         res.end(data);
@@ -267,13 +295,12 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         if (sessions.has(old)) revokeSession(old);
         if (sessions.size >= 16) fail(429, 'session_limit', 'Too many live demo sessions');
         const token = randomToken();
-        sessions.set(token, {expiresAt: now() + SESSION_TTL_MS});
-        json(res, 200, {user: USER}, {'Set-Cookie': cookie(token)});
+        sessions.set(token, {id: randomToken(), expiresAt: now() + PENDING_SESSION_TTL_MS, verifiedAt: null, challengeId: null});
+        json(res, 200, sessionState(token), {'Set-Cookie': cookie(token)});
         return;
       }
       if (req.method === 'GET' && route === '/api/session') {
-        const authenticated = sessions.has(sessionToken(req));
-        json(res, 200, {authenticated, user: authenticated ? USER : null});
+        json(res, 200, sessionState(sessionToken(req)));
         return;
       }
       if (req.method === 'POST' && route === '/api/phones/enroll') {
@@ -328,9 +355,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
       if (!route.startsWith('/api/')) fail(404, 'not_found', 'Resource not found');
       const session = requireSession(req);
       if (req.method === 'GET' && route === '/api/account') {
-        json(res, 200, {user: USER, balanceCents, recipients: RECIPIENTS,
-          phone: phone ? {id: phone.id, label: phone.label, online: phone.socket?.readyState === WebSocket.OPEN} : null,
-          transactions});
+        requireAuthenticated(session);
+        json(res, 200, {user: USER, phone: phoneStatus(), activity});
         return;
       }
       if (req.method === 'POST' && route === '/api/logout') {
@@ -351,23 +377,20 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
       }
       if (req.method === 'POST' && route === '/api/challenges') {
         const body = await readJson(req);
-        exactFields(body, ['recipientId', 'amountCents', 'note']);
+        exactFields(body, []);
         sweep();
         if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
-        const recipient = RECIPIENTS.find((item) => item.id === body.recipientId);
-        if (!recipient || !Number.isSafeInteger(body.amountCents) || body.amountCents <= 0
-            || body.amountCents > balanceCents || typeof body.note !== 'string' || body.note.length > 120) {
-          fail(400, 'invalid_operation', 'Use a known recipient, positive available integer cents and a note up to 120 characters');
-        }
+        const login = sessions.get(session);
+        if (login.verifiedAt !== null) fail(409, 'already_authenticated', 'This session has already completed verification');
         if (!phone || phone.socket?.readyState !== WebSocket.OPEN) fail(409, 'phone_offline', 'Connect the enrolled foreground phone first');
-        if (transactions.length >= 1000) fail(409, 'demo_full', 'Demo history is full; restart offline to reset');
         endChallenge(challenges.get(activeId), 'cancelled');
         while (challenges.size >= 100) challenges.delete(challenges.keys().next().value);
         const challenge = Object.freeze({v: CONTRACT_VERSION, id: randomUUID(), nonce: randomToken(), phoneId: phone.id,
-          expiresAt: now() + CHALLENGE_TTL_MS, operation: Object.freeze({recipientId: recipient.id,
-            recipientName: recipient.name, amountCents: body.amountCents, note: body.note})});
+          expiresAt: Math.min(now() + CHALLENGE_TTL_MS, login.expiresAt), purpose: 'login',
+          sessionId: login.id, username, serviceName: 'NearKey'});
         const record = {challenge, status: 'waiting_phone', phoneReady: false, receipt: null, session};
         challenges.set(challenge.id, record);
+        login.challengeId = challenge.id;
         activeId = challenge.id;
         sendPhone({type: 'challenge', challenge});
         json(res, 200, {challenge, status: record.status});
@@ -377,7 +400,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
       if (match) {
         const record = ownChallenge(match[1], session);
         if (req.method === 'GET' && !match[2]) {
-          json(res, 200, {challenge: record.challenge, status: record.status, phoneReady: record.phoneReady, receipt: record.receipt});
+          json(res, 200, {challenge: record.challenge, status: record.status, phoneReady: record.phoneReady, receipt: record.receipt,
+            authenticated: sessions.get(session).verifiedAt !== null});
           return;
         }
         if (req.method === 'POST' && match[2] === 'cancel') {
@@ -391,31 +415,38 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         if (req.method === 'POST' && match[2] === 'complete') {
           const body = await readJson(req);
           exactFields(body, ['signature']);
-          // All state checks and debit below are synchronous after the final await.
-          // No interleaving request can spend or consume this record twice.
+          // Proof consumption and session promotion are synchronous after the final await.
+          // No interleaving request can consume the record twice.
           sweep();
           if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
           requirePending(record);
+          if (record.challenge.sessionId !== sessions.get(session).id) {
+            fail(403, 'invalid_proof', 'Challenge does not match this login session');
+          }
           if (record.challenge.phoneId !== phone?.id) fail(409, 'phone_changed', 'Challenge phone is no longer enrolled');
           let valid;
-          try { valid = verifyProof(phone.key, approvalText(record.challenge.id, record.challenge.nonce), body.signature); }
+          try { valid = verifyProof(phone.key, approvalText(record.challenge), body.signature); }
           catch { fail(400, 'invalid_signature', 'Expected an unpadded base64url DER P-256 signature'); }
           if (!valid) fail(403, 'invalid_proof', 'Signature does not match this challenge and phone');
-          // Recheck deadline/funds/session after cryptographic work, before atomic commit.
+          // Recheck deadline and session after cryptographic work, before atomic promotion.
           sweep();
           if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
           requirePending(record);
-          const operation = record.challenge.operation;
-          if (operation.amountCents > balanceCents) fail(409, 'insufficient_funds', 'Insufficient demo funds');
-          const receipt = Object.freeze({id: randomUUID(), ...operation, createdAt: now()});
-          balanceCents -= operation.amountCents;
-          transactions.unshift(receipt);
+          const verifiedAt = now();
+          const receipt = Object.freeze({id: randomUUID(), serviceName: record.challenge.serviceName,
+            username: record.challenge.username, phoneLabel: phone.label, verifiedAt, createdAt: verifiedAt});
+          const login = sessions.get(session);
+          login.verifiedAt = verifiedAt;
+          login.expiresAt = verifiedAt + SESSION_TTL_MS;
+          activity.unshift(receipt);
+          if (activity.length > 1000) activity.pop();
           record.receipt = receipt;
           record.status = 'approved';
           record.phoneReady = false;
-          activeId = null;
+          if (activeId === record.challenge.id) activeId = null;
           sendPhone({type: 'cancel', challengeId: record.challenge.id});
-          json(res, 200, {status: 'approved', receipt});
+          json(res, 200, {status: 'approved', authenticated: true, user: USER, receipt},
+            {'Set-Cookie': cookie(session)});
           return;
         }
       }

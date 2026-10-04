@@ -7,13 +7,13 @@ export function validateChallenge(challenge) {
       || typeof challenge.phoneId !== 'string' || !challenge.phoneId
       || typeof challenge.nonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge.nonce)
       || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt <= 0
-      || typeof challenge.operation?.recipientId !== 'string' || !challenge.operation.recipientId
-      || typeof challenge.operation?.recipientName !== 'string' || !challenge.operation.recipientName
-      || !Number.isSafeInteger(challenge.operation?.amountCents) || challenge.operation.amountCents <= 0
-      || typeof challenge.operation?.note !== 'string' || challenge.operation.note.length > 120) {
-    throw new Error('Server returned an invalid version 1 challenge. No Bluetooth request was sent.');
+      || challenge.purpose !== 'login'
+      || typeof challenge.username !== 'string' || !challenge.username || challenge.username.length > 80
+      || typeof challenge.serviceName !== 'string' || !challenge.serviceName || challenge.serviceName.length > 80
+      || typeof challenge.sessionId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge.sessionId)) {
+    throw new Error(`Server returned an invalid version ${CONTRACT_VERSION} login challenge. No Bluetooth request was sent.`);
   }
-  return Object.freeze({...challenge, operation: Object.freeze({...challenge.operation})});
+  return Object.freeze({...challenge});
 }
 
 // Owns a single server challenge; all callbacks and in-flight results are lifetime guarded.
@@ -64,7 +64,10 @@ export class ChallengeFlow {
     try {
       const data = await this.api(`/api/challenges/${encodeURIComponent(run.challenge.id)}`, {signal: run.controller.signal});
       if (!this.live(run)) return;
-      if (data.status === 'approved') return this.finish(run, 'approved', data.receipt);
+      if (data.status === 'approved') {
+        if (data.authenticated !== true || !data.receipt) throw new Error('Provider did not confirm a verified login.');
+        return this.finish(run, 'approved', data.receipt);
+      }
       if (data.status === 'expired' || data.status === 'cancelled') return this.finish(run, data.status);
       if (!pendingStatuses.has(data.status)) throw new Error('Server returned an unknown challenge status.');
       // Never replace the original immutable challenge with a later poll's metadata.
@@ -107,12 +110,14 @@ export class ChallengeFlow {
       if (!this.live(run)) return;
       const signature = await this.bluetooth.prove(run.challenge, run.controller.signal);
       if (!this.live(run)) return;
-      this.update(run, {phase: 'submitting', message: 'Phone signed. Verifying with the bank server…'});
+      this.update(run, {phase: 'submitting', message: 'Phone signed. Verifying your second factor…'});
       const result = await this.api(`/api/challenges/${encodeURIComponent(run.challenge.id)}/complete`, {
         method: 'POST', body: {signature}, signal: run.controller.signal,
       });
       if (!this.live(run)) return;
-      if (result.status !== 'approved' || !result.receipt) throw new Error('Bank did not return a transfer receipt.');
+      if (result.status !== 'approved' || result.authenticated !== true || !result.receipt) {
+        throw new Error('Provider did not confirm a verified login.');
+      }
       this.finish(run, 'approved', result.receipt);
     } catch (error) {
       if (!this.live(run)) return;
@@ -153,9 +158,9 @@ export class ChallengeFlow {
     this.stop(run);
     this.run = null;
     this.state = {...this.state, phase, receipt, message: message || {
-      approved: 'Transfer complete. Your phone signed the server challenge over Bluetooth.',
-      expired: 'The 60-second challenge expired. No further proof will be sent. Start a new transfer to retry.',
-      cancelled: 'Handshake stopped. Cancellation requested; any proof already sent is reconciled from the account.',
+      approved: 'Login verified. Your phone completed the Bluetooth second factor.',
+      expired: 'The 60-second login challenge expired. Start a new verification to retry.',
+      cancelled: 'Login verification stopped. Any proof already submitted will be checked against your session.',
     }[phase]};
     this.emit();
   }

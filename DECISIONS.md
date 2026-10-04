@@ -1,8 +1,10 @@
-# Passive hardware-key rewrite decisions
+# Bluetooth 2FA provider decisions
 
-- Branch: `rewrite-passive-hardware-key`, based on `dev`; main/dev preserve the old export. Contract version1 in `shared/protocol.mjs` and `shared/PROTOCOL.md`.
-- User-approved: Bluetooth pre-enabled; one-time browser permission; MacBook Chromium demo; foreground native Android app first;60-second challenge; background wake-up, optional phone approval and transaction limits deferred.
-- Security: server-generated nonce associated with immutable transaction and original session; single-use atomic execution. No extra transaction bearer token. Phone signs only authenticated server-delivered pending challenge. BLE isn't distance bounding or transaction consent.
-- Stack: Node22+ HTTP/WS, one `ws` dependency, vanilla web modules, Kotlin Android Keystore/OkHttp/GATT. No simulator, framework layers, or background service baseline.
-- Demo shortcuts: fictional account/money, explicit demo password, in-memory server state. Trusted initial enrollment; no password-only replacement endpoint. Local server restart reset is deliberate demo lifecycle, not production security.
-- Shared protocol is parent-owned; agents request changes. PLAN.md is local workflow state and is never committed. Repository build config is not personal/chezmoi configuration and remains repo-managed.
+- NearKey is a 2FA provider. Password entry starts a pending login; Bluetooth phone verification completes authentication before any dashboard or protected account data is accessible. Initial enrollment occurs inside the pending login.
+- Contract version 2 in `shared/protocol.mjs` and `shared/PROTOCOL.md` replaces transfer approvals. Immutable server login context includes challenge ID, nonce, phone, expiry, username, service and pending-session identifier. `NEARKEY-LOGIN-V2` domain-separates signatures; enrollment remains `NEARKEY-ENROLL-V1`.
+- User-approved baseline: Bluetooth pre-enabled; one-time browser permission; Mac Chromium; foreground native Android app; 60-second challenge. Background wake and optional explicit phone approval remain deferred.
+- Security: server-generated nonce, pending-session ownership, single-use atomic authentication and no extra bearer approval token. Phone signs only authenticated server-delivered login work. BLE proves registered key possession, not distance or consent. Password alone cannot replace an enrolled phone.
+- Stack: Node 22+ HTTP/WS, `ws`, vanilla browser modules and Kotlin AndroidKeyStore/OkHttp/GATT. No simulated proof, background service or framework layers.
+- Demo lifecycle: one fixture account, explicit demo password and in-memory state. Offline server restart resets enrollment, sessions and verification activity; it is a deliberate demo reset, not account recovery or persistence.
+- Browser provider dashboard presents authenticator status, setup details and verification activity. Banking balances, recipients, transfers and transaction approvals are removed.
+- PLAN.md is local workflow state and is never committed. Repository build configuration is repo-managed.

@@ -41,7 +41,7 @@ export async function api(path, {method = 'GET', body, signal, timeoutMs = 8_000
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;
     if (error instanceof ApiError) throw error;
-    throw new Error('Cannot reach the bank server. Check your connection and retry.');
+    throw new Error('Cannot reach the NearKey server. Check your connection and retry.');
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);

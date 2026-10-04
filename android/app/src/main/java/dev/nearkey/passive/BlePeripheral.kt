@@ -164,7 +164,7 @@ class BlePeripheral(
                         Protocol.checkRequest(frame, challenge, System.currentTimeMillis())
                         check(live()) { "Challenge expired" }
                         // Sign ONLY immutable state received from the authenticated phone channel.
-                        val signature = sign(Protocol.approvalText(challenge.id, challenge.nonce))
+                        val signature = sign(Protocol.approvalText(challenge))
                         check(live()) { "Challenge expired during signing" }
                         proof = Protocol.proof(challenge, signature).also { check(it.size <= 512) }
                         onStatus("Proof ready for browser relay")

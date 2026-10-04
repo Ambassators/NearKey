@@ -70,8 +70,8 @@ class MainActivity : Activity() {
         fun text(value: String): TextView = TextView(this).apply {
             text = value; textSize = 17f; setPadding(0, 12, 0, 12); layout.addView(this)
         }
-        text("NearKey · fictional transfer demo").textSize = 23f
-        text("Keep this app in the foreground. No phone confirmation or biometrics. Bluetooth must already be enabled.")
+        text("NearKey · Authenticator").textSize = 23f
+        text("Your phone verifies browser logins over Bluetooth. Keep this app open with Bluetooth enabled; verification happens automatically.")
         urlInput = EditText(this).apply {
             hint = "Server URL (https://…)"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
@@ -102,10 +102,10 @@ class MainActivity : Activity() {
         }
         onlineText = text("Phone channel: offline")
         bleText = text("Bluetooth: stopped")
-        challengeText = text("No pending server challenge")
+        challengeText = text("Ready for a browser login")
         statusText = text(if (enrolled())
             "Locally enrolled · ${key.backing()}. Keep the app open for the authenticated phone channel."
-            else "Enroll once using the browser's code and reachable server URL.")
+            else "Start signing in to NearKey in your browser, then enroll once using its pairing code and reachable server URL.")
         Button(this).apply {
             text = "Forget local enrollment"
             setOnClickListener {
@@ -308,9 +308,9 @@ class MainActivity : Activity() {
 
     private fun displayChallenge() {
         val c = pending
-        challengeText.text = if (c == null) "No pending server challenge" else {
+        challengeText.text = if (c == null) "Ready for a browser login" else {
             val remaining = minOf(c.expiresAt - System.currentTimeMillis(), pendingEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
-            "Pending server challenge ${c.id}\nTo: ${c.recipientName} (${c.recipientId})\nAmount: ${c.amountCents} cents\nNote: ${c.note}\nRemaining: ${(remaining + 999) / 1000} seconds"
+            "Verifying browser login\nService: ${c.serviceName}\nAccount: ${c.username}\nLogin request: ${c.id}\nRemaining: ${(remaining + 999) / 1000} seconds"
         }
     }
 

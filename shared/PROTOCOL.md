@@ -1,43 +1,63 @@
-# Passive hardware-key contract — version 1
+# NearKey login contract — version 2
 
-This contract is the integration boundary, not an abstraction framework. Parent-owned: builders must not edit `shared/`; report a necessary change rather than guessing. Everything below is mandatory unless the parent approves a change.
+The shared JavaScript module and Android `Protocol` implement this contract. Version 2 replaces transfer approvals with Bluetooth login verification; enrollment proof remains version 1.
 
-## Core scope and state
-- Fictional bank demo only. Native Android foreground app; Bluetooth already enabled; Mac Chromium Web Bluetooth. No simulator/fallback proof, confirmation codes, WebAuthn, background push, phone approval, or real payments.
-- One demo account and one enrolled phone; one active challenge per account. Server records/session/phone tokens/transactions may live in memory. Explicitly document restart resets and offline reset for re-enrollment. No password-only phone replacement/removal endpoint.
-- Server is plain Node >=22 ESM HTTP, dependency `ws` only where necessary. Root package.json + package-lock.json. Vanilla browser modules, no build tool. Android Kotlin + Android Keystore + OkHttp WebSocket, lean native UI, no Compose or dependency-injection framework.
-- Defaults: PORT=5173, HOST=127.0.0.1, PUBLIC_ORIGIN=http://localhost:5173. Demo credentials are explicit fixture values demo / demo-passive-key; allow env override. These are not credentials for a real account. PUBLIC_ORIGIN is configured to the browser-facing HTTPS origin for network deployments; Android uses the same reachable HTTPS/WSS base URL. Reject unsafe non-local browser origins; do not blindly trust forwarded headers.
-- GET / serves web/index.html; serve web resources and /shared/protocol.mjs only via explicit safe paths. JSON error responses: {error: string, message: string}, never secrets or stacks.
-- Integers in cents; seed recipients [{id:'alex', name:'Alex Morgan'}, {id:'sam', name:'Sam Rivera'}], starting balanceCents=100000. Limit notes to 120 characters and reject invalid/overdrawn values.
+## Scope and state
+
+NearKey is a 2FA provider demo with one account and one enrolled Android phone. The browser dashboard is available only after both password and Bluetooth factors succeed. A correct password creates a pending login, not an authenticated account session. First-time phone enrollment and Bluetooth permission occur during that pending login.
+
+Node 22+ serves vanilla browser modules and a phone WebSocket channel. Android uses a foreground Kotlin app, AndroidKeyStore and OkHttp. Bluetooth must already be enabled. The phone signs automatically: this proves registered key possession, not user consent or physical distance. There is no background wake, manual proof entry or simulated verification.
+
+Sessions, enrollment, challenges and verification activity live in memory. Restarting resets them. Enrolled phones cannot be replaced by password alone; re-enrollment requires a deliberate offline server reset and local phone reset. Defaults remain `HOST=127.0.0.1`, `PORT=5173`, `PUBLIC_ORIGIN=http://localhost:5173`, demo credentials `demo` / `demo-passive-key`; environment overrides are supported. Network deployments use the same trusted HTTPS origin on browser and phone.
 
 ## Browser HTTP API
-All successful responses JSON except static assets. Non-GET session routes enforce same-origin Origin and CSRF protection (strict same-origin Origin plus appropriate cookies sufficient for demo; no permissive CORS). Session cookie HttpOnly, SameSite=Strict, Secure for configured HTTPS, bounded lifetime. Password hashes use scrypt with salt, timing-safe verification. No login tokens in localStorage.
-- POST /api/login {username,password} -> {user:{id,name}} plus session cookie.
-- POST /api/logout {} -> {ok:true}; revoke session and pending challenge, phone must not keep advertising the old challenge.
-- GET /api/session -> {authenticated:boolean, user:{id,name}|null}.
-- GET /api/account (session) -> {user:{id,name}, balanceCents, recipients:[{id,name}], phone:null|{id,label,online:boolean}, transactions:[{id,recipientId,recipientName,amountCents,note,createdAt}]}.
-- POST /api/pairing {} (session, only when no phone enrolled) -> {pairingId,pairingCode,expiresAt}. expiresAt epoch milliseconds; unguessable code >=128 bits, five-minute TTL, single use, tied to creating session/account. Browser shows code and URL for pasting into app. Pairing identifier/code is enrollment only, never transaction confirmation. GET /api/account polling detects enrollment. Reject any attempted existing-phone replacement.
-- POST /api/challenges {recipientId,amountCents,note} (session) -> {challenge,status:'waiting_phone'}. Require registered, connected phone. Immutable server-side operation; 60-second TTL; invalidate/cancel previous pending challenge. `challenge` shape: {v:1,id,nonce,phoneId,expiresAt,operation:{recipientId,recipientName,amountCents,note}}. id is opaque random UUID, nonce is 32 random bytes base64url unpadded. Push challenge to phone immediately.
-- GET /api/challenges/:id (own creating session only) -> {challenge,status,phoneReady:boolean,receipt:null|transaction}. Status enum waiting_phone|waiting_bluetooth|approved|expired|cancelled. Timer inferred from challenge.expiresAt.
-- POST /api/challenges/:id/complete {signature} (own creating session only) -> {status:'approved',receipt:transaction}. Verify registered phone public key over exact UTF-8 approvalText(id,nonce) from shared/protocol.mjs. Signature base64url unpadded DER-encoded ECDSA SHA256withECDSA P-256 (not IEEE-P1363). Validate exact encoding/length. Recheck live session, challenge, expiry, registered phone, immutable amount/funds AFTER asynchronous work. Consume and execute exactly once atomically in synchronous code; second completion rejects or returns same receipt without another debit. Never accept browser-supplied nonce, phone ID, public key, amount, or metadata as replacement state.
-- POST /api/challenges/:id/cancel {} (own creating session only) -> {ok:true}; send cancel to phone.
 
-## Phone HTTP/WebSocket API
-Phone credentials stay off browser responses and BLE.
-- POST /api/phones/enroll {pairingCode,publicKey,label,signature} (no browser session required) -> {phoneId,deviceToken}. publicKey is base64url unpadded DER SPKI for EC P-256. Proof of possession is DER ECDSA SHA-256 over enrollmentText(pairingCode,publicKey). Validate correct key curve/type, signature, code expiry/live originating session and single use. label max40. deviceToken >=256-bit opaque random credential (not private signing key), authenticated ownership. Rate/size limits, no open CORS; browser endpoints must never accept phone token instead of browser session.
-- WebSocket /api/phone-channel with Authorization: Bearer <deviceToken> header (never query string). Server -> {type:'ready',phoneId}; {type:'challenge',challenge}; {type:'cancel',challengeId}. Phone -> {type:'ping'} permitted; no browser tokens. Server pings to detect disconnection. Reconnect resends only live unexpired pending challenge. Bound WS payload and validate upgrade path, phone token; do not accept cross-origin browser websocket connections. Displacement/logout/expiry close corresponding phone pending operation via cancel.
-- POST /api/phone/challenges/:id/ready {} with Authorization bearer deviceToken -> {ok:true}; own live challenge only, sets phoneReady=true/status waiting_bluetooth, no TTL extension. App sends this only after BLE advertisement starts successfully. Advertise for remaining time until expiresAt, never past it.
+All successful API responses are JSON. Session cookies are HttpOnly, SameSite=Strict and Secure for HTTPS. Non-GET browser routes enforce same-origin Origin; no permissive CORS or login tokens in localStorage. Password hashes use salted scrypt and timing-safe verification. Errors are `{error,message}` without secrets or stacks.
 
-## BLE and phone signing rules
-Phone is GATT peripheral; browser central. UUID constants in shared/protocol.mjs. No transaction details or credentials advertised. Native key generated EC secp256r1 AndroidKeyStore, SHA256withECDSA, private key non-exportable. Hardware backing best-effort only; do not claim every phone offers hardware-backed storage. Keystore user-authentication disabled for passive baseline. Device bearer token in app-private storage, not code or logs.
-- GATT REQUEST characteristic writable with response. Browser sends newline-terminated UTF-8 JSON bleRequest(challenge), conservative <=20-byte chunks via writeValueWithResponse in order. Max assembled request1024 bytes, bounded per-connection buffer; reject malformed, unsupported version, wrong type, expired/unknown ID, mismatched nonce, absent pending server request. Never sign arbitrary browser payloads.
-- GATT PROOF characteristic readable, emits UTF-8 JSON {v:1,challengeId,signature}. Build and store response before acknowledging final write. Implement Android read offsets/MTU for long characteristic reads (signature response exceeds20 bytes) so browser readValue yields full JSON. Bound response; never expose key/token. Browser validates version/id/JSON and submits only signature.
-- One connected central at a time; clear peer buffers/results on disconnect; allow retry of same pending challenge, never a new arbitrary nonce. Stop advertising on connection, keep GATT server alive to serve proof until deadline; restart if disconnected before deadline, stop/release on cancel/expiry/logout/app disconnect. Handle Bluetooth permission denial/not enabled/peripheral unsupported/error messages visibly; never silently enable Bluetooth.
-- Require foreground Android app and retain connection only while appropriate; no fake background implementation. Safe reconnection avoids stale cancel/challenge races. On app logout/reset erase local credential/key as appropriate, never silently replace server registered key.
+- `POST /api/login {username,password}` creates a pending session. `GET /api/session` returns `{authenticated,pending,user,setup,challenge,challengeStatus}`. A pending session lasts ten minutes; `user` remains null and `setup` contains `{phone:null|{id,label,online}}`. After verification `authenticated` is true, `pending` is false and `user` is available. Verified sessions last eight hours from verification.
+- `POST /api/logout {}` revokes the session, pairing and pending challenge and sends cancellation to the phone.
+- `GET /api/account` requires completed Bluetooth authentication and returns `{user,phone,activity}`. Activity contains successful verification receipts; it is not a ledger.
+- `POST /api/pairing {}` permits first-time enrollment from a live pending session and returns `{pairingId,pairingCode,expiresAt}`. The unguessable five-minute pairing code is single-use and tied to that session. Existing phones cannot be replaced. Poll session setup to detect enrollment.
+- `POST /api/challenges {}` from a pending session requires a registered, online phone. It cancels previous pending work and returns `{challenge,status:'waiting_phone'}`. The immutable challenge is `{v:2,id,nonce,phoneId,expiresAt,purpose:'login',username,serviceName,sessionId}`. ID is a canonical UUID; nonce is 32 random bytes encoded unpadded base64url; sessionId is a random identifier tied to the creating pending session, never its bearer cookie. Deadline is at most 60 seconds and never exceeds session expiry.
+- `GET /api/challenges/:id` from its own creating session returns `{challenge,status,phoneReady,receipt,authenticated}`. Status is `waiting_phone|waiting_bluetooth|approved|expired|cancelled`.
+- `POST /api/challenges/:id/complete {signature}` verifies the enrolled phone's DER P-256 ECDSA SHA-256 signature against the exact server-owned login context. After checking deadline, ownership, pending state and key, it atomically consumes the challenge, promotes that session and returns `{status:'approved',authenticated:true,user,receipt}`. Replay cannot promote another session or add another receipt. Receipt is `{id,serviceName,username,phoneLabel,verifiedAt,createdAt}`. Browser-supplied metadata, nonce, phone IDs or public keys cannot replace stored challenge state.
+- `POST /api/challenges/:id/cancel {}` cancels own pending work and sends phone cancellation.
 
-## Browser behavior
-On first enabling this 2FA type, an explicit user click calls navigator.bluetooth.requestDevice({filters:[{services:[BLE_SERVICE_UUID]}]}); granted BluetoothDevice is cached locally by id only. Enroll via code once phone advertises setup service; Android may advertise a bounded setup window to enable chooser before first transaction. No transaction nonce signature in setup. Subsequent approvals try navigator.bluetooth.getDevices() to find the enrolled browser-granted device and connect automatically; if getDevices is absent/no remembered device/connect fails, show an explicit Choose/reconnect phone button invoking requestDevice from that fresh user gesture. Do not promise silent discovery on every browser/version. Unsupported/ insecure context errors do not fabricate success.
-On transaction creation show Waiting for Bluetooth handshake, phone delivery readiness, timer, and exact server-returned metadata. Poll challenge/account state with bounded cleanup on cancel/logout; await phoneReady before GATT proof request, then connect/write/read/submit. No simulator/no manual signature entry/no confirmation code. Allow manual reconnect and cancellation; failures restore usable controls and expiry stops all retries. Enrollment succeeds separately from browser device permission; permission is not cryptographic phone enrollment, and wrong chosen phone must fail without replacing enrolled key.
+## Phone API
 
-## Verification boundaries
-Server tests cover full API/WS with real generated EC keys, enroll proof, fresh success, expiry, replay/concurrency, wrong session/key/nonce proof, cancelled/logout/replaced request, immutable transaction, bad amounts, malformed encodings/key curve, rate/body bounds, token leakage, no password-only replacement. Browser tests may mock navigator.bluetooth transport; clearly label mocks. Android assembleDebug validates compilation only. Actual Mac Chromium <-> Android BLE is a manual hardware gate, not proven by server tests or emulator.
+Phone credentials never appear in browser responses or BLE.
+
+- `POST /api/phones/enroll {pairingCode,publicKey,label,signature}` returns `{phoneId,deviceToken}`. Public key is canonical unpadded base64url DER SPKI for EC P-256. Enrollment signature is DER ECDSA SHA-256 over `NEARKEY-ENROLL-V1\n{pairingCode}\n{publicKey}` without a trailing newline. Validate key curve/type, signature, code deadline, originating session and single use. Label is at most 40 characters; device token is an opaque random credential of at least 256 bits.
+- WebSocket `/api/phone-channel` authenticates with `Authorization: Bearer <deviceToken>`, never a query string. Server messages are `{type:'ready',phoneId}`, `{type:'challenge',challenge}` and `{type:'cancel',challengeId}`. Reconnect resends only live pending work. Server heartbeat detects loss; channel payloads are bounded and browser-origin upgrades are rejected.
+- `POST /api/phone/challenges/:id/ready {}` with that bearer credential marks own live challenge ready after Android advertisement starts successfully. Status becomes `waiting_bluetooth`; readiness never extends the original deadline.
+
+## Signing text and BLE
+
+The exact UTF-8 login signing text has no trailing newline:
+
+```text
+NEARKEY-LOGIN-V2
+{id}
+{nonce}
+{phoneId}
+{expiresAt}
+{username}
+{serviceName}
+{sessionId}
+```
+
+The prefix domain-separates login from enrollment and previous transfer approvals. `expiresAt` is its base-10 integer representation. Username, service name and phone ID must not contain CR/LF; phone ID and display fields are at most 128 characters. Session ID is 1–128 URL-safe ASCII characters. Android rejects extra challenge fields and any purpose other than `login`. It validates the challenge from the authenticated phone channel before advertising or signing.
+
+Phone is the GATT peripheral and browser is central; UUIDs are unchanged and exported by `shared/protocol.mjs`. No login details or credentials are advertised. Private P-256 key is non-exportable in AndroidKeyStore; hardware backing is best effort and user-authentication is disabled for automatic signing.
+
+- REQUEST is writable with response. Browser sends `{v:2,type:'prove',challengeId,nonce}` as strict newline-terminated UTF-8 JSON in ordered writes of at most 20 bytes. Maximum assembled request is 1024 bytes including newline. Version/type/id/nonce must match the phone's live immutable server challenge. The phone never signs arbitrary Bluetooth payloads.
+- PROOF is readable and contains `{v:2,challengeId,signature}`. Signature is canonical unpadded base64url DER ECDSA, not IEEE-P1363. Response is ready before the final write acknowledgement. Android implements offset reads with MTU-1 slices and an empty terminal read. Browser validates response version/ID/shape and relays only the signature through its own pending session.
+- One central connects at a time. Disconnect clears buffers/proof and may re-advertise before the original deadline. Cancel, expiry, logout, channel loss, app backgrounding and reset discard pending work and close GATT. Bluetooth/permission failures remain visible; the app never silently enables the radio.
+
+## Browser flow and verification boundaries
+
+Password → first-time enrollment if needed → Bluetooth login verification → authenticated provider dashboard. Initial permission uses an explicit click to `navigator.bluetooth.requestDevice` with the service UUID. Only the granted device ID is remembered locally. Setup advertising is bounded and cannot sign. Later logins try `getDevices()` and reconnect to a previously granted device; unsupported or missing permission requires a fresh chooser gesture. Wrong chosen phones fail cryptographic verification without replacing enrollment.
+
+During verification show phone readiness, remaining time, service and account. Await phoneReady before requesting proof. Cancel, expiry or logout stops retries and polling. Do not fabricate success when Web Bluetooth is unavailable.
+
+Server tests exercise real P-256 cryptography and HTTP/WS pending-to-authenticated transitions, including replay, wrong sessions/keys/context, expiry and enrollment restrictions. Browser Bluetooth tests use mocks. JVM protocol tests verify strict parsing, framing and signed context interoperability. None proves AndroidKeyStore or physical Bluetooth operation. Mac Chromium ↔ a foreground physical Android phone remains the manual hardware gate.

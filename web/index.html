@@ -3,52 +3,68 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#143d32">
-  <title>Nearkey — a fictional bank</title>
+  <meta name="theme-color" content="#174b3b">
+  <title>Nearkey — your phone, your second factor</title>
   <link rel="stylesheet" href="/web/styles.css">
   <script type="module" src="/web/app.mjs"></script>
 </head>
 <body>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="icon-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="icon-bluetooth" viewBox="0 0 24 24"><path d="m7 7 10 10-5 4V3l5 4L7 17"/></symbol>
+    <symbol id="icon-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/></symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  </defs></svg>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true">n.</span> nearkey<span class="brand-note">BANK DEMO</span></a>
-    <div class="top-actions"><span class="demo-tag">Fictional money. Real phone key.</span><button id="logout" class="quiet" hidden>Sign out</button></div>
+    <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true">n</span>nearkey<span class="brand-note">AUTHENTICATOR</span></a>
+    <div class="top-actions"><span class="status-label"><span class="status-dot"></span> A little closer. A lot safer.</span><button id="logout" class="quiet" hidden>Sign out <span aria-hidden="true">↗</span></button></div>
   </header>
   <main>
     <p id="notice" class="notice" role="status" hidden></p>
-    <section id="login-view" class="login-layout">
-      <div class="intro"><p class="eyebrow">LESS FRICTION. SAME YOU.</p><h1>Your phone.<br>Your key.<br><span>Just nearby.</span></h1><p>Sign in with a password. Then let your enrolled Android phone sign a transfer over Bluetooth — without a code or a confirmation tap.</p><div class="intro-foot">01 Password &nbsp; / &nbsp; 02 Nearby phone &nbsp; / &nbsp; 03 Done</div></div>
-      <section class="card login-card" aria-labelledby="login-title"><p class="eyebrow">WELCOME TO THE DEMO</p><h2 id="login-title">Sign in</h2><form id="login-form">
-        <label for="username">Username</label><input id="username" name="username" autocomplete="username" value="demo" required>
-        <label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
-        <button id="login-button" class="primary" type="submit">Sign in to Nearkey <span aria-hidden="true">↗</span></button>
-      </form><p class="fineprint">Demo fixture: <code>demo</code> / <code>demo-passive-key</code>. The server may override these credentials.</p><p class="fineprint">Use Mac Chromium on HTTPS (or localhost on the laptop) and a foreground native Android app with Bluetooth already enabled. No real accounts or payments.</p></section>
-    </section>
-    <div id="bank-view" hidden>
-      <div class="page-heading"><div><p class="eyebrow">YOUR EVERYDAY ACCOUNT</p><h1>Hello, <span id="user-name"></span>.</h1></div><span class="account-tag">FICTIONAL CHECKING · 0001</span></div>
-      <div class="bank-grid">
-        <aside>
-          <section class="balance-card"><p>Available balance</p><div id="balance" class="balance">—</div><div class="balance-foot"><span>USD · demo funds</span><span aria-hidden="true">↗</span></div></section>
-          <section class="card phone-card" aria-labelledby="phone-title"><div class="section-top"><h2 id="phone-title">Your phone key</h2><span id="phone-status" class="badge">Not enrolled</span></div><p id="phone-description" class="muted"></p><p id="bluetooth-problem" class="notice" hidden></p>
-            <div id="enrollment"><ol class="steps"><li>With Bluetooth already enabled, open the native Android app and keep it in the foreground.</li><li>Paste the enrollment code and the reachable bank base URL.</li><li>Start the phone’s setup advertisement, then choose it here.</li></ol><button id="pair-button" class="primary">Get enrollment code</button>
-              <div id="pairing" class="pairing" hidden><p class="eyebrow">ENROLLMENT ONLY · NOT A TRANSFER CODE</p><label for="pair-code">Paste this code into the Android app</label><input id="pair-code" readonly spellcheck="false"><label for="base-url">Bank base URL</label><input id="base-url" readonly spellcheck="false"><p id="pair-time" class="fineprint"></p><p class="fineprint">The phone must reach this same bank. On a phone, localhost points to the phone itself: use the deployment’s reachable HTTPS base URL, configured by the server owner.</p></div>
+    <section id="login-view" class="login-layout" aria-label="Sign in to Nearkey">
+      <div class="intro">
+        <p class="eyebrow"><span class="tiny-line"></span> YOUR SECOND FACTOR, REIMAGINED</p>
+        <h1>Good security.<br><span>Within reach.</span></h1>
+        <p class="intro-copy">Your phone is your second factor. Sign in, keep it nearby, and let Bluetooth do the verification.</p>
+        <div class="proximity-art" aria-hidden="true"><div class="orbit orbit-outer"></div><div class="orbit orbit-middle"></div><div class="orbit orbit-inner"></div><span class="orbit-point point-one"></span><span class="orbit-point point-two"></span><div class="phone-illustration"><div class="phone-camera"></div><span class="phone-brand">n</span><div class="phone-check"><svg><use href="#icon-shield"/></svg></div><span class="phone-caption">YOU'RE THE KEY</span><div class="phone-home"></div></div><span class="art-chip bluetooth-chip"><svg><use href="#icon-bluetooth"/></svg> Nearby by design</span><span class="art-chip proof-chip"><span class="status-dot"></span> Signed on your phone</span></div>
+        <div class="intro-foot"><svg><use href="#icon-key"/></svg><span>A phone-held key. No code to copy.</span></div>
+      </div>
+      <div class="login-side">
+        <div class="login-topline"><span>NEARKEY / SECURE SIGN IN</span><svg><use href="#icon-shield"/></svg></div>
+        <section class="login-card" aria-labelledby="login-title">
+          <ol class="login-progress" aria-label="Sign-in progress"><li id="password-step" class="active"><span>01</span>Password</li><li id="phone-step"><span>02</span>Nearby phone</li></ol>
+          <div id="credentials-panel"><p class="eyebrow">WELCOME BACK</p><h2 id="login-title">Your security<br>starts here.</h2><p class="muted login-copy">Sign in to manage your Nearkey authenticator.</p><form id="login-form">
+            <label for="username">Username</label><input id="username" name="username" autocomplete="username" value="demo" required>
+            <div class="label-row"><label for="password">Password</label><span>Step 1 of 2</span></div><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+            <button id="login-button" class="primary" type="submit">Continue <svg><use href="#icon-arrow"/></svg></button>
+          </form><div class="demo-credentials"><span class="mini-icon"><svg><use href="#icon-key"/></svg></span><div><strong>Try the demo</strong><p><code>demo</code> / <code>demo-passive-key</code></p></div></div></div>
+          <div id="factor-panel" hidden>
+            <div id="setup-panel"><p class="eyebrow">PASSWORD ACCEPTED</p><h2 id="factor-title" tabindex="-1">One more step.<br>Keep your phone close.</h2><p id="phone-description" class="muted login-copy"></p><div class="factor-status"><span class="mini-icon"><svg><use href="#icon-phone"/></svg></span><div><strong id="setup-phone-name">Your phone key</strong><span id="phone-status">Not enrolled</span></div><span id="setup-phone-dot" class="status-dot"></span></div>
+              <p id="bluetooth-problem" class="notice" hidden></p>
+              <div id="enrollment"><ol class="steps"><li>Open the Nearkey Android app with Bluetooth enabled.</li><li>Enter the enrollment code and server URL below.</li><li>Enroll your phone and keep the app open.</li></ol><button id="pair-button" class="primary" type="button">Get enrollment code <svg><use href="#icon-arrow"/></svg></button><div id="pairing" class="pairing" hidden><label for="pair-code">Enrollment code</label><input id="pair-code" readonly spellcheck="false"><label for="base-url">Nearkey server URL</label><input id="base-url" readonly spellcheck="false"><p id="pair-time" class="fineprint"></p><p class="fineprint">Use the deployment’s reachable HTTPS URL on your phone. Localhost refers to the phone itself.</p></div></div>
+              <div id="bluetooth-setup" hidden><p id="permission-description" class="muted"></p><button id="choose-button" class="secondary" type="button">Choose your phone <svg><use href="#icon-bluetooth"/></svg></button><button id="verify-button" class="primary" type="button">Verify nearby phone <svg><use href="#icon-arrow"/></svg></button></div>
             </div>
-            <div id="bluetooth-setup" hidden><p id="permission-description" class="muted"></p><button id="choose-button" class="primary">Choose phone / Enable Bluetooth 2FA</button><p class="fineprint">Chooser permission is separate from enrollment. Keep the phone app open and start its setup advertisement before choosing.</p></div>
-          </section>
-          <p class="fineprint aside-note">Hackathon demo: account, pairing and enrollment reset when the server restarts. To re-enroll, the operator resets server state offline; there is no password-only phone replacement.</p>
-        </aside>
-        <div class="main-column">
-          <section id="transfer-panel" class="card transfer-card" aria-labelledby="transfer-title"><p class="eyebrow">MOVE FICTIONAL MONEY</p><h2 id="transfer-title">Send a transfer</h2><p id="transfer-help" class="muted"></p><form id="transfer-form">
-            <label for="recipient">To</label><select id="recipient" name="recipientId" required></select>
-            <label for="amount">Amount in USD</label><div class="amount-input"><span aria-hidden="true">$</span><input id="amount" name="amount" inputmode="decimal" placeholder="25.00" pattern="[0-9]+([.][0-9]{1,2})?" required aria-label="Amount in US dollars"></div>
-            <label for="note">Note <span class="optional">optional</span></label><input id="note" name="note" maxlength="120" placeholder="What’s it for?">
-            <button id="transfer-button" class="primary" type="submit">Start Bluetooth transfer <span aria-hidden="true">↗</span></button><p class="fineprint">The bank fixes the recipient, amount and note before asking your phone to sign. The challenge expires 60 seconds after creation; reconnecting never extends it. No edits during the handshake.</p>
-          </form></section>
-          <section id="challenge-panel" class="card challenge-card" aria-labelledby="challenge-title" hidden><div class="section-top"><p id="challenge-kicker" class="eyebrow">PASSIVE PHONE SIGNATURE</p><span id="countdown" class="timer"></span></div><h2 id="challenge-title">Waiting for Bluetooth handshake</h2><p id="challenge-message" class="muted" role="status"></p><dl class="transaction-details"><div><dt>Recipient</dt><dd id="challenge-recipient"></dd></div><div><dt>Amount</dt><dd id="challenge-amount"></dd></div><div><dt>Note</dt><dd id="challenge-note" class="preserve"></dd></div></dl><p id="delivery-status" class="fineprint"></p><details class="wire-details"><summary>Exact server challenge</summary><dl><dt>Version</dt><dd id="challenge-version"></dd><dt>Challenge ID</dt><dd id="challenge-id"></dd><dt>Phone ID</dt><dd id="challenge-phone"></dd><dt>Nonce</dt><dd id="challenge-nonce"></dd><dt>Recipient ID</dt><dd id="challenge-recipient-id"></dd><dt>Amount in cents</dt><dd id="challenge-cents"></dd><dt>Expires at</dt><dd id="challenge-expires"></dd></dl></details><div class="challenge-actions"><button id="reconnect-button" class="primary" hidden>Choose / reconnect phone</button><button id="cancel-button" class="secondary">Cancel transfer</button><button id="new-transfer-button" class="primary" hidden>New transfer</button></div><div id="receipt" class="receipt" hidden><p class="eyebrow">BANK RECEIPT</p><p id="receipt-details"></p><code id="receipt-id"></code></div></section>
-          <section class="card activity-card"><div class="section-top"><h2>Recent transfers</h2><span class="subtle">Server ledger</span></div><ul id="transactions" class="activity-list"></ul><p id="no-transactions" class="muted">No transfers yet. Your first one starts here.</p></section>
-        </div>
+            <section id="challenge-panel" aria-labelledby="challenge-title" hidden><div class="challenge-orb"><svg><use href="#icon-bluetooth"/></svg><span class="orb-ring"></span></div><div class="section-top"><p class="eyebrow">NEARBY VERIFICATION</p><span id="countdown" class="timer"></span></div><h2 id="challenge-title" tabindex="-1">Checking your<br>phone key.</h2><p id="challenge-message" class="muted" role="status"></p><dl class="login-details"><div><dt>Signing in to</dt><dd id="challenge-service"></dd></div><div><dt>Account</dt><dd id="challenge-username"></dd></div><div><dt>Verification</dt><dd>Phone signature over Bluetooth</dd></div></dl><p id="delivery-status" class="fineprint"></p><div class="challenge-actions"><button id="reconnect-button" class="primary" type="button" hidden>Choose / reconnect phone</button><button id="retry-button" class="primary" type="button" hidden>Try verification again</button><button id="cancel-button" class="text-button" type="button">Cancel verification</button></div></section>
+            <button id="back-button" class="text-button back-button" type="button">← Use a different account</button>
+          </div>
+          <div class="login-foot"><svg><use href="#icon-shield"/></svg><span>Your dashboard opens after your phone’s signature is verified.</span></div>
+        </section>
+        <p class="browser-note">Use Chromium on HTTPS or localhost, with the Android app in the foreground.</p>
+      </div>
+    </section>
+    <div id="dashboard-view" class="dashboard-layout" hidden>
+      <aside class="sidebar"><p class="eyebrow">YOUR WORKSPACE</p><nav aria-label="Dashboard navigation"><a class="nav-link selected" href="#overview" aria-current="page"><svg><use href="#icon-shield"/></svg>Overview<span>↗</span></a><a class="nav-link" href="#activity"><svg><use href="#icon-clock"/></svg>Security activity</a><a class="nav-link" href="#how-it-works"><svg><use href="#icon-key"/></svg>How it works</a></nav><div class="sidebar-note"><span class="mini-icon"><svg><use href="#icon-bluetooth"/></svg></span><strong>Presence is the proof.</strong><p>Your phone signs each login challenge with its own private key.</p><span class="small-label">NEARKEY / V2</span></div></aside>
+      <div class="dashboard-content" id="overview">
+        <div class="page-heading"><div><p class="eyebrow">YOUR SECURITY, AT A GLANCE</p><h1 id="dashboard-title" tabindex="-1">Welcome, <span id="user-name"></span><span class="heading-dot">.</span></h1><p class="muted">A familiar phone. A verified sign-in. You’re all set.</p></div><span class="verified-tag"><svg><use href="#icon-shield"/></svg>2FA verified</span></div>
+        <section class="security-banner"><div><p class="eyebrow">A STRONGER WAY TO SIGN IN</p><h2>Your phone is<br>your second factor.</h2><p>No six-digit code. Your nearby Android phone<br>proves possession of its enrolled key.</p><span class="banner-chip"><span class="status-dot"></span> Bluetooth verified login</span></div><div class="banner-art" aria-hidden="true"><span class="banner-orbit"></span><span class="banner-orbit inner"></span><svg class="banner-phone"><use href="#icon-phone"/></svg><span class="banner-lock"><svg><use href="#icon-shield"/></svg></span><span class="banner-signal"><svg><use href="#icon-bluetooth"/></svg></span></div></section>
+        <div class="summary-grid"><section class="card factor-card"><div class="section-top"><span class="mini-icon"><svg><use href="#icon-phone"/></svg></span><span id="dashboard-phone-status" class="badge">Enrolled</span></div><p class="eyebrow">YOUR AUTHENTICATOR</p><h2 id="dashboard-phone-name">Android phone</h2><p class="muted">A private signing key stays on your phone.</p><div class="card-foot"><span id="dashboard-phone-detail">Ready for your next sign-in</span><svg><use href="#icon-bluetooth"/></svg></div></section><section class="card session-card"><div class="section-top"><span class="mini-icon"><svg><use href="#icon-shield"/></svg></span><span class="badge verified">Verified</span></div><p class="eyebrow">CURRENT SESSION</p><h2>Password + phone</h2><p class="muted" id="session-time">Both factors verified for this session.</p><div class="card-foot"><span>Phone signature accepted</span><svg><use href="#icon-shield"/></svg></div></section></div>
+        <div class="detail-grid"><section class="card activity-card" id="activity"><div class="section-top"><div><p class="eyebrow">PEACE OF MIND, ON RECORD</p><h2>Security activity</h2></div><span class="subtle">Verified sign-ins</span></div><ul id="activity-list" class="activity-list"></ul><p id="no-activity" class="muted" hidden>No verified sign-ins recorded yet.</p></section><section class="card how-card" id="how-it-works"><p class="eyebrow">BUILT AROUND YOU</p><h2>Two factors.<br>One smooth sign-in.</h2><ol class="provider-steps"><li><span>01</span><div><strong>Enter your password</strong><p>Nearkey checks the first factor.</p></div></li><li><span>02</span><div><strong>Your phone signs nearby</strong><p>Bluetooth carries a one-time challenge.</p></div></li><li><span>03</span><div><strong>You’re securely signed in</strong><p>The server verifies your phone’s signature.</p></div></li></ol><p class="integration-note">Provider demo · This workspace demonstrates Nearkey’s login flow. External app integrations are not configured.</p></section></div>
+        <p class="workspace-note"><svg><use href="#icon-shield"/></svg>Enrollment and activity are held in memory for this demo and reset when the server restarts.</p>
       </div>
     </div>
   </main>
-  <footer>NEARKEY / PASSIVE HARDWARE KEY <span>Demo only · Bluetooth permission is always yours.</span></footer>
+  <footer><span>NEARKEY <span class="footer-divider">/</span> SECURITY WITHIN REACH</span><span>Designed around your presence.</span></footer>
 </body>
 </html>

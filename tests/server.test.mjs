@@ -16,7 +16,7 @@ const keyPair = (curve = 'prime256v1') => {
 };
 const signature = (pair, text, dsaEncoding = 'der') => sign('sha256', Buffer.from(text, 'utf8'),
   {key: pair.privateKey, dsaEncoding}).toString('base64url');
-const proof = (pair, challenge) => signature(pair, approvalText(challenge.id, challenge.nonce));
+const proof = (pair, challenge) => signature(pair, approvalText(challenge));
 
 class Inbox {
   constructor(ws) {
@@ -39,7 +39,7 @@ class Inbox {
 }
 
 async function fixture(t, options = {}) {
-  let time = 1_800_000_000_000;
+  let time = options.initialTime ?? 1_800_000_000_000;
   const app = await createApp({now: () => time, ...options});
   app.server.listen(0, '127.0.0.1');
   await once(app.server, 'listening');
@@ -85,8 +85,8 @@ async function fixture(t, options = {}) {
     const phone = await pair();
     return {...phone, ...await connect(phone.deviceToken)};
   }
-  async function challenge(phone, operation = {recipientId: 'alex', amountCents: 1234, note: 'Lunch ☕'}) {
-    const result = await request('/api/challenges', {method: 'POST', cookie: phone.cookie, body: operation});
+  async function challenge(phone) {
+    const result = await request('/api/challenges', {method: 'POST', cookie: phone.cookie, body: {}});
     assert.equal(result.status, 200);
     assert.equal(result.data.status, 'waiting_phone');
     return result.data.challenge;
@@ -129,7 +129,9 @@ function streamedPost(base, route, cookie, firstChunk) {
 const waitTurn = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 test('wire texts, real DER signatures and canonical SPKI enforce the shared contract', () => {
-  assert.equal(approvalText('id', 'nonce'), 'NEARKEY-PASSIVE-V1\nid\nnonce');
+  assert.equal(approvalText({id: 'id', nonce: 'nonce', phoneId: 'phone', expiresAt: 123,
+    username: 'demo', serviceName: 'NearKey', sessionId: 'session'}),
+  'NEARKEY-LOGIN-V2\nid\nnonce\nphone\n123\ndemo\nNearKey\nsession');
   assert.equal(enrollmentText('code', 'key'), 'NEARKEY-ENROLL-V1\ncode\nkey');
   const pair = keyPair();
   assert.equal(parsePublicKey(pair.encoded).asymmetricKeyDetails.namedCurve, 'prime256v1');
@@ -139,9 +141,10 @@ test('wire texts, real DER signatures and canonical SPKI enforce the shared cont
   assert.throws(() => parseSignature(Buffer.from([0x30, 7, 2, 2, 0, 1, 2, 1, 1]).toString('base64url')));
 });
 
-test('password fixture, HttpOnly Strict cookie, same-origin/CSRF and session-only account', async (t) => {
+test('password verifies only first factor; pending session cannot access provider dashboard', async (t) => {
   const f = await fixture(t);
-  assert.deepEqual((await f.request('/api/session')).data, {authenticated: false, user: null});
+  assert.deepEqual((await f.request('/api/session')).data, {authenticated: false, pending: false,
+    user: null, setup: null, challenge: null, challengeStatus: null});
   assert.equal((await f.request('/api/account')).status, 401);
   const body = {username: 'demo', password: 'wrong'};
   assert.equal((await f.request('/api/login', {method: 'POST', body})).status, 401);
@@ -153,25 +156,28 @@ test('password fixture, HttpOnly Strict cookie, same-origin/CSRF and session-onl
   assert.equal(login.status, 200);
   assert.match(login.headers.get('set-cookie'), /HttpOnly; SameSite=Strict; Max-Age=28800/);
   assert.ok(!login.headers.get('set-cookie').includes('Secure'));
-  assert.deepEqual(Object.keys(login.data), ['user']);
+  assert.equal(login.data.authenticated, false);
+  assert.equal(login.data.pending, true);
+  assert.equal(login.data.user, null);
+  assert.deepEqual(login.data.setup, {phone: null});
   const cookie = login.headers.get('set-cookie').split(';')[0];
-  assert.equal((await f.request('/api/session', {cookie})).data.authenticated, true);
+  assert.equal((await f.request('/api/session', {cookie})).data.authenticated, false);
+  assert.equal((await f.request('/api/session', {cookie})).data.pending, true);
   const account = await f.request('/api/account', {cookie});
-  assert.equal(account.data.balanceCents, 100000);
-  assert.deepEqual(account.data.recipients, [{id: 'alex', name: 'Alex Morgan'}, {id: 'sam', name: 'Sam Rivera'}]);
-  assert.equal(account.data.phone, null);
+  assert.equal(account.status, 403);
+  assert.equal(account.data.error, 'verification_required');
   assert.equal((await f.request('/api/account', {cookie, headers: {Origin: 'https://evil.example'}})).status, 403);
   assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie, headers: {Origin: ''}})).status, 403);
   assert.equal((await f.request('/api/account', {headers: {Cookie: `${cookie}; ${cookie}`}})).status, 401);
 });
 
 test('configuration rejects unsafe origins and sets Secure on HTTPS sessions', async (t) => {
-  for (const value of ['http://192.168.1.2:5173', 'https://bank.example/path', 'https://bank.example/',
-    'https://user:password@bank.example', 'file:///tmp', 'http://localhost.evil']) assert.throws(() => validateOrigin(value));
+  for (const value of ['http://192.168.1.2:5173', 'https://auth.example/path', 'https://auth.example/',
+    'https://user:password@auth.example', 'file:///tmp', 'http://localhost.evil']) assert.throws(() => validateOrigin(value));
   assert.equal(validateOrigin('http://[::1]:5173'), 'http://[::1]:5173');
-  const f = await fixture(t, {publicOrigin: 'https://bank.example'});
+  const f = await fixture(t, {publicOrigin: 'https://auth.example'});
   const result = await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'},
-    headers: {Origin: 'https://bank.example'}});
+    headers: {Origin: 'https://auth.example'}});
   assert.equal(result.status, 200);
   assert.match(result.headers.get('set-cookie'), /; Secure$/);
 });
@@ -223,7 +229,7 @@ test('superseded/expired/logout pairing codes and wrong enrollment domains canno
     signature: signature(pair, enrollmentText(code, pair.encoded))});
   assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: bodyFor(old.pairingCode)})).status, 401);
   assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: {...bodyFor(current.pairingCode),
-    signature: signature(pair, approvalText(current.pairingId, current.pairingCode))}})).status, 400);
+    signature: signature(pair, approvalText({id: current.pairingId, nonce: current.pairingCode}))}})).status, 400);
   f.advance(300000);
   assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: bodyFor(current.pairingCode)})).status, 401);
   const last = (await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).data;
@@ -236,7 +242,12 @@ test('full HTTP/WS/DER happy path, readiness, immutable metadata and credential 
   const phone = await f.enrolled();
   assert.deepEqual(phone.ready, {type: 'ready', phoneId: phone.phoneId});
   const challenge = await f.challenge(phone);
-  assert.equal(challenge.v, 1);
+  assert.equal(challenge.v, 2);
+  assert.equal(challenge.purpose, 'login');
+  assert.equal(challenge.serviceName, 'NearKey');
+  assert.equal(challenge.username, 'demo');
+  assert.equal(Buffer.from(challenge.sessionId, 'base64url').length, 32);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
   assert.equal(challenge.phoneId, phone.phoneId);
   assert.equal(challenge.expiresAt, f.time() + CHALLENGE_TTL_MS);
   assert.equal(Buffer.from(challenge.nonce, 'base64url').length, 32);
@@ -254,10 +265,16 @@ test('full HTTP/WS/DER happy path, readiness, immutable metadata and credential 
   assert.equal(result.status, 200);
   assert.equal(result.data.status, 'approved');
   assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
-  assert.deepEqual({...result.data.receipt, id: undefined, createdAt: undefined}, {...challenge.operation, id: undefined, createdAt: undefined});
+  assert.equal(result.data.authenticated, true);
+  assert.equal(result.headers.get('set-cookie').split(';')[0], phone.cookie);
+  assert.match(result.headers.get('set-cookie'), /Max-Age=28800/);
+  assert.equal(result.data.receipt.serviceName, challenge.serviceName);
+  assert.equal(result.data.receipt.verifiedAt, f.time());
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.authenticated, true);
+  assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie, body: {}})).status, 409);
   const account = (await f.request('/api/account', {cookie: phone.cookie})).data;
-  assert.equal(account.balanceCents, 98766);
-  assert.equal(account.transactions.length, 1);
+  assert.equal(account.activity.length, 1);
+  assert.equal(account.activity[0].username, 'demo');
   assert.deepEqual(account.phone, {id: phone.phoneId, label: 'Android phone', online: true});
   assert.equal((await f.get(phone, challenge)).data.status, 'approved');
   for (const exposed of [account, delivered, phone.ready, challenge, result.data]) {
@@ -288,7 +305,10 @@ test('wrong real key/nonce/id/domain and tampered metadata never authorize', asy
   const phone = await f.enrolled();
   const challenge = await f.challenge(phone);
   for (const bad of [proof(keyPair(), challenge), proof(phone.pair, {...challenge, nonce: 'wrong'}),
-    proof(phone.pair, {...challenge, id: 'wrong'}), signature(phone.pair, `NEARKEY-PASSIVE-V1\r\n${challenge.id}\r\n${challenge.nonce}`)]) {
+    proof(phone.pair, {...challenge, id: 'wrong'}), proof(phone.pair, {...challenge, sessionId: 'wrong'}),
+    proof(phone.pair, {...challenge, username: 'other'}), proof(phone.pair, {...challenge, phoneId: 'other'}),
+    proof(phone.pair, {...challenge, expiresAt: challenge.expiresAt + 1}),
+    proof(phone.pair, {...challenge, serviceName: 'Other'}), signature(phone.pair, `NEARKEY-LOGIN-V2\r\n${challenge.id}\r\n${challenge.nonce}`)]) {
     assert.equal((await f.complete(phone, challenge, {signature: bad})).status, 403);
   }
   for (const extra of [{nonce: challenge.nonce}, {phoneId: phone.phoneId}, {publicKey: phone.pair.encoded},
@@ -296,41 +316,44 @@ test('wrong real key/nonce/id/domain and tampered metadata never authorize', asy
     assert.equal((await f.complete(phone, challenge, extra)).status, 400);
   }
   const local = structuredClone(challenge);
-  local.operation.amountCents = 1;
-  local.operation.note = 'Attacker changed view';
+  local.serviceName = 'Attacker changed view';
   const result = await f.complete(phone, local);
-  assert.equal(result.status, 200);
-  assert.equal(result.data.receipt.amountCents, 1234);
-  assert.equal(result.data.receipt.note, 'Lunch ☕');
+  assert.equal(result.status, 403);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
+  const valid = await f.complete(phone, challenge);
+  assert.equal(valid.status, 200);
+  assert.equal(valid.data.receipt.serviceName, 'NearKey');
 });
 
-test('malformed signature encodings, non-DER and trailing bytes reject without debit', async (t) => {
+test('malformed signature encodings, non-DER and trailing bytes reject without authenticating', async (t) => {
   const f = await fixture(t);
   const phone = await f.enrolled();
   const challenge = await f.challenge(phone);
   const valid = proof(phone.pair, challenge);
   const trailing = Buffer.concat([Buffer.from(valid, 'base64url'), Buffer.from([0])]).toString('base64url');
   for (const bad of ['', '!', valid + '=', valid.replace(/./, '+'), null, 42, {}, 'A'.repeat(1000), trailing,
-    signature(phone.pair, approvalText(challenge.id, challenge.nonce), 'ieee-p1363'),
+    signature(phone.pair, approvalText(challenge), 'ieee-p1363'),
     Buffer.from([0x30, 6, 2, 1, 0x80, 2, 1, 1]).toString('base64url')]) {
     assert.equal((await f.complete(phone, challenge, {signature: bad})).status, 400);
   }
-  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.balanceCents, 100000);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
   assert.equal((await f.complete(phone, challenge)).status, 200);
 });
 
-test('concurrent completion and replay debit exactly once, new challenge rejects old proof', async (t) => {
+test('concurrent completion and replay authenticate exactly once, new challenge rejects old proof', async (t) => {
   const f = await fixture(t);
   const phone = await f.enrolled();
   const challenge = await f.challenge(phone);
   const results = await Promise.all([f.complete(phone, challenge), f.complete(phone, challenge), f.complete(phone, challenge)]);
   assert.deepEqual(results.map((item) => item.status).sort(), [200, 409, 409]);
   assert.equal((await f.complete(phone, challenge)).status, 409);
+  const account = (await f.request('/api/account', {cookie: phone.cookie})).data;
+  phone.cookie = await f.login();
   const next = await f.challenge(phone);
   assert.equal((await f.complete(phone, next, {signature: proof(phone.pair, challenge)})).status, 403);
-  const account = (await f.request('/api/account', {cookie: phone.cookie})).data;
-  assert.equal(account.balanceCents, 98766);
-  assert.equal(account.transactions.length, 1);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
+  assert.equal(account.activity.length, 1);
+  assert.equal(account.activity[0].username, 'demo');
 });
 
 test('cancel and displaced request notify phone and invalidate signatures', async (t) => {
@@ -346,7 +369,7 @@ test('cancel and displaced request notify phone and invalidate signatures', asyn
   assert.equal((await f.request(`/api/challenges/${current.id}/cancel`, {method: 'POST', cookie: phone.cookie, body: {}})).status, 200);
   assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: current.id});
   assert.equal((await f.complete(phone, current)).status, 409);
-  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.balanceCents, 100000);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
 });
 
 test('absolute expiry cancels via maintenance timer, never extended by phone-ready', async (t) => {
@@ -377,7 +400,7 @@ test('logout revokes session and cancels pending phone without exposing/removing
   assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.authenticated, false);
   const cookie = await f.login();
   assert.equal((await f.request('/api/pairing', {method: 'POST', cookie, body: {}})).status, 409);
-  assert.equal((await f.request('/api/account', {cookie})).data.balanceCents, 100000);
+  assert.equal((await f.request('/api/account', {cookie})).status, 403);
 });
 
 test('expiry/logout during asynchronous body upload is rechecked before committing', async (t) => {
@@ -396,9 +419,8 @@ test('expiry/logout during asynchronous body upload is rechecked before committi
   second.req.end(proof(phone.pair, challenge) + '"}');
   assert.equal((await second.result).status, 401);
   const cookie = await f.login();
-  const account = (await f.request('/api/account', {cookie})).data;
-  assert.equal(account.balanceCents, 100000);
-  assert.equal(account.transactions.length, 0);
+  assert.equal((await f.request('/api/account', {cookie})).status, 403);
+  assert.equal((await f.request('/api/session', {cookie})).data.pending, true);
 });
 
 test('session expiration and login rotation cancel original-session work', async (t) => {
@@ -420,6 +442,35 @@ test('session expiration and login rotation cancel original-session work', async
   assert.equal((await f.complete(phone, next)).status, 401);
 });
 
+test('pending login expires after ten minutes and proof grants a fresh eight-hour session', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  f.advance(9 * 60_000 + 59_999);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.pending, true);
+  f.advance(1);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.pending, false);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 401);
+  assert.equal((await f.request('/api/pairing', {method: 'POST', cookie: phone.cookie, body: {}})).status, 401);
+  phone.cookie = await f.login();
+  f.advance(9 * 60_000);
+  const challenge = await f.challenge(phone);
+  assert.equal((await f.complete(phone, challenge)).status, 200);
+  f.advance(8 * 60 * 60_000 - 1);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 200);
+  f.advance(1);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 401);
+});
+
+test('a valid verification at timestamp zero authenticates using the explicit pending sentinel', async (t) => {
+  const f = await fixture(t, {initialTime: 0});
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  assert.equal((await f.complete(phone, challenge)).data.authenticated, true);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.authenticated, true);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 200);
+  assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie, body: {}})).status, 409);
+});
+
 test('disconnect/reconnect only resends live challenge, resets readiness and keeps deadline', async (t) => {
   const f = await fixture(t);
   const phone = await f.enrolled();
@@ -430,10 +481,10 @@ test('disconnect/reconnect only resends live challenge, resets readiness and kee
   phone.ws.close();
   await closed;
   await waitTurn();
-  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.phone.online, false);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.setup.phone.online, false);
   assert.equal((await f.get(phone, challenge)).data.phoneReady, false);
   assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie,
-    body: {recipientId: 'sam', amountCents: 1, note: ''}})).status, 409);
+    body: {}})).status, 409);
   f.advance(1000);
   const connection = await f.connect(phone.deviceToken);
   assert.deepEqual(await connection.inbox.next(), {type: 'challenge', challenge});
@@ -459,7 +510,7 @@ test('channel displacement cancels old peer and replays only live server state t
   assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
   await oldClose;
   assert.deepEqual(await fresh.inbox.next(), {type: 'challenge', challenge});
-  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.phone.online, true);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.setup.phone.online, true);
 });
 
 test('phone WebSocket requires header only, correct path, no browser Origin or query credentials', async (t) => {
@@ -497,17 +548,14 @@ test('WS rejects malformed/control/binary/oversized payloads and message floodin
   assert.equal((await closed)[0], 1008);
 });
 
-test('bad amounts, recipient, note and metadata cannot create a transfer or disturb live operation', async (t) => {
+test('login challenge accepts no transfer or client-selected security metadata', async (t) => {
   const f = await fixture(t);
   const phone = await f.enrolled();
   const challenge = await f.challenge(phone);
-  for (const amountCents of [0, -1, 1.2, '1', null, 100001, Number.MAX_SAFE_INTEGER + 1]) {
-    assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie,
-      body: {recipientId: 'alex', amountCents, note: ''}})).status, 400);
-  }
-  for (const patch of [{recipientId: 'unknown'}, {note: 'x'.repeat(121)}, {note: null}, {extra: true}]) {
-    assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie,
-      body: {recipientId: 'alex', amountCents: 1, note: '', ...patch}})).status, 400);
+  for (const body of [{recipientId: 'alex', amountCents: 1, note: ''}, {purpose: 'transfer'},
+    {sessionId: challenge.sessionId}, {username: 'other'}, {serviceName: 'Other'},
+    {phoneId: phone.phoneId}, {extra: true}]) {
+    assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie, body})).status, 400);
   }
   assert.equal((await f.get(phone, challenge)).data.status, 'waiting_phone');
   assert.equal((await f.complete(phone, challenge)).status, 200);
@@ -559,9 +607,9 @@ test('bounded session and challenge histories with account-wide single pending r
   f.advance(8 * 60 * 60000);
   const phone = await f.enrolled();
   const first = await f.challenge(phone);
-  for (let i = 0; i < 100; i++) await f.challenge(phone, {recipientId: 'sam', amountCents: 1, note: ''});
+  for (let i = 0; i < 100; i++) await f.challenge(phone);
   assert.equal((await f.get(phone, first)).status, 404);
-  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.balanceCents, 100000);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
 });
 
 test('serves explicit web inventory and shared module, not traversal, source files or symlinks', async (t) => {
@@ -570,8 +618,24 @@ test('serves explicit web inventory and shared module, not traversal, source fil
   assert.match((await f.request('/')).data, /NearKey/);
   assert.match((await f.request('/web/styles.css')).data, /demo/);
   assert.equal((await f.request('/styles.css')).status, 200);
-  assert.match((await f.request('/shared/protocol.mjs')).data, /NEARKEY-PASSIVE-V1/);
+  assert.match((await f.request('/shared/protocol.mjs')).data, /NEARKEY-LOGIN-V2/);
   for (const route of ['/web/leak.css', '/server/app.mjs', '/shared/PROTOCOL.md', '/secret.txt', '/web/%2e%2e/secret.txt']) {
     assert.equal((await f.request(route)).status, 404);
   }
+});
+
+
+test('serves only the two bundled fonts through explicit same-origin asset routes', async (t) => {
+  const f = await fixture(t);
+  for (const name of ['dm-sans.ttf', 'manrope.ttf']) {
+    const asset = await f.request(`/web/fonts/${name}`);
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers.get('content-type'), 'font/ttf');
+    const bytes = new Uint8Array(await (await fetch(f.base + `/web/fonts/${name}`)).arrayBuffer());
+    assert.ok(bytes.length > 1000);
+    assert.deepEqual([...bytes.subarray(0, 4)], [0, 1, 0, 0]);
+    assert.equal((await f.request(`/web/fonts/${name}`, {headers: {Origin: 'https://evil.example'}})).status, 403);
+  }
+  assert.equal((await f.request('/web/fonts/dm-sans-OFL.txt')).status, 404);
+  assert.equal((await f.request('/web/fonts/other.ttf')).status, 404);
 });
