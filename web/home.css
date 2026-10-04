@@ -205,8 +205,8 @@ html:has(.home:not([hidden])) { scroll-behavior: smooth; }
   content: '';
   position: absolute;
   top: 23px;
-  left: 0;
-  right: 0;
+  left: 24px;
+  right: calc((100% - 120px) / 4 - 24px);
   height: 2px;
   border-radius: 1px;
 }
@@ -258,8 +258,11 @@ html:has(.home:not([hidden])) { scroll-behavior: smooth; }
 }
 .proof-column h3 { font-size: 1.25rem; }
 .proof-column ul { list-style: none; margin: 22px 0 0; padding: 0; display: grid; gap: 18px; }
-.proof-column li { display: grid; grid-template-columns: 26px 1fr; gap: 12px; font-size: 16px; line-height: 1.55; }
+.proof-column li { position: relative; padding-left: 40px; font-size: 16px; line-height: 1.55; }
 .proof-column li svg {
+  position: absolute;
+  left: 0;
+  top: -.05em;
   width: 26px;
   height: 26px;
   padding: 5px;
