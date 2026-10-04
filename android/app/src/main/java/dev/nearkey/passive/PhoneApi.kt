@@ -1,7 +1,12 @@
 package dev.nearkey.passive
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -14,11 +19,13 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.UnknownServiceException
+import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 
 /** Platform TLS verification remains enabled; redirects cannot forward the phone token. */
-class PhoneApi {
+class PhoneApi(context: Context) {
+    private val connectivity = context.applicationContext.getSystemService(ConnectivityManager::class.java)
     private val client = OkHttpClient.Builder()
         .followRedirects(false).followSslRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
@@ -26,6 +33,30 @@ class PhoneApi {
 
     private var socket: WebSocket? = null
     private var closed = false
+    private var wifiNetwork: Network? = null
+    private var wifiClient: OkHttpClient? = null
+
+    @Suppress("DEPRECATION")
+    private fun clientFor(base: HttpUrl): OkHttpClient {
+        if (!LocalNetwork.isPrivateIpv4(base.host)) return client
+        // A local Wi-Fi network can work even when Android chooses cellular for internet access.
+        // Bind just this client's sockets, leaving other websites and the process default intact.
+        val networks = connectivity.allNetworks.filter {
+            val capabilities = connectivity.getNetworkCapabilities(it)
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
+        val network = networks.firstOrNull { it == connectivity.activeNetwork } ?: networks.firstOrNull()
+        require(network != null) { LocalNetwork.WIFI_REQUIRED }
+        if (wifiNetwork != network) {
+            wifiClient = client.newBuilder().socketFactory(network.socketFactory)
+                .dns(object : Dns {
+                    override fun lookup(hostname: String): List<InetAddress> = network.getAllByName(hostname).toList()
+                }).build()
+            wifiNetwork = network
+        }
+        return wifiClient!!
+    }
 
     fun origin(value: String): HttpUrl = PhoneOrigin.parse(value)
 
@@ -48,7 +79,7 @@ class PhoneApi {
             }
             request.header("Authorization", "Bearer $token")
         }
-        return client.newCall(request.build()).also { call ->
+        return clientFor(base).newCall(request.build()).also { call ->
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     val error = when {
@@ -57,7 +88,8 @@ class PhoneApi {
                         e is UnknownServiceException && !base.isHttps ->
                             "Cleartext HTTP is unavailable; use HTTPS or a debug build"
                         !base.isHttps && base.host in setOf("localhost", "127.0.0.1", "::1") ->
-                            "Cannot reach the computer's local server. Check the USB connection and USB forwarding, then retry. For Wi-Fi setup, use a reachable HTTPS server address"
+                            "Cannot reach the computer's local server. Check USB forwarding, or scan a Wi-Fi setup QR from your computer with both devices on the same Wi-Fi network."
+                        LocalNetwork.isPrivateIpv4(base.host) -> LocalNetwork.UNREACHABLE
                         else -> "Network request failed; check URL and connectivity"
                     }
                     done(null, error)
@@ -110,7 +142,7 @@ class PhoneApi {
             // OkHttp upgrades HTTPS as WSS and debug HTTP as WS. Never put the credential in a URL.
             .header("Authorization", "Bearer $token").build()
         socket?.cancel()
-        return client.newWebSocket(request, listener).also { socket = it }
+        return clientFor(base).newWebSocket(request, listener).also { socket = it }
     }
 
     @Synchronized

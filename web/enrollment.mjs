@@ -32,7 +32,7 @@ export class EnrollmentQr {
 
   render(pairing, origin, now = Date.now()) {
     if (!pairing) return this.clear();
-    if (!Number.isFinite(pairing.expiresAt) || pairing.expiresAt <= now) {
+    if (!pairing.pageScoped && (!Number.isFinite(pairing.expiresAt) || pairing.expiresAt <= now)) {
       this.clear();
       this.message.textContent = 'This code expired. Get a fresh enrollment code.';
       return;
@@ -46,7 +46,9 @@ export class EnrollmentQr {
     try {
       this.container.innerHTML = this.encode(url);
       this.container.hidden = false;
-      this.message.textContent = 'Tap “Scan setup QR code” in the Nearkey Android app, scan here, then tap “Enroll phone” on your phone. This page advances automatically.';
+      if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(new URL(origin).hostname)) {
+        this.message.textContent = 'Connect your phone to the same Wi-Fi network as this computer, then scan this QR code and tap Connect website.';
+      }
     } catch {
       this.container.replaceChildren();
       this.manual.open = true;

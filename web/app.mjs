@@ -22,11 +22,17 @@ const replacementQr = new EnrollmentQr({container: $('replacement-qr'), message:
 let session = null;
 let account = null;
 let pairing = null;
+let pairingSocket = null;
 let pollTimer = null;
 let lifetime = new AbortController();
 let epoch = 0;
 let loginBusy = false;
 let pairBusy = false;
+let pairingReconnect = false;
+let pairingRetryAt = 0;
+let pairingFailures = 0;
+let pairingConnectedAt = 0;
+let pairingElsewhere = false;
 let challengeBusy = false;
 let chooserBusy = false;
 let autoAttempted = false;
@@ -38,25 +44,24 @@ let replacementPairing = null;
 let replacementBusy = false;
 let replacementRequested = false;
 let openingDashboard = false;
-let currentVerification = null;
 let restoringSession = true;
 let visiblePage = null;
+let noticeTimer = null;
 const pendingStatuses = new Set(['waiting_phone', 'waiting_bluetooth']);
 const challengeTitles = {
-  waiting: 'Checking your phone key.',
-  connecting: 'Checking your phone key.',
-  submitting: 'Verifying your signature.',
-  reconnect: 'Let’s find your phone.',
-  approved: 'Your sign-in is verified.',
-  expired: 'Let’s try that again.',
-  cancelled: 'Verification stopped.',
-  failed: 'Verification interrupted.',
+  waiting: 'Verifying phone',
+  connecting: 'Connecting phone',
+  submitting: 'Verifying phone',
+  reconnect: 'Reconnect phone',
+  approved: 'Verified',
+  expired: 'Verification expired',
+  cancelled: 'Verification cancelled',
+  failed: 'Verification interrupted',
 };
 
 const flow = new ChallengeFlow({api, bluetooth, onChange: state => {
   renderChallenge(state);
   if (state?.phase === 'approved') {
-    currentVerification = state.receipt?.verifiedAt || state.receipt?.createdAt || null;
     const currentEpoch = epoch;
     void enterDashboard().catch(error => {
       if (epoch === currentEpoch) handleError(error);
@@ -68,9 +73,18 @@ const flow = new ChallengeFlow({api, bluetooth, onChange: state => {
 }});
 
 // Session lifecycle and feedback.
-function notice(message = '') {
+function notice(message = '', {toast = false} = {}) {
+  clearTimeout(noticeTimer);
+  noticeTimer = null;
   $('notice').textContent = message;
   $('notice').hidden = !message;
+  $('notice').dataset.presentation = toast ? 'toast' : 'inline';
+  if (message && toast) {
+    noticeTimer = setTimeout(() => {
+      $('notice').hidden = true;
+      noticeTimer = null;
+    }, 4000);
+  }
   if (message) observeDebug('notice', message);
 }
 
@@ -145,6 +159,8 @@ function resetLifetime() {
   pollTimer = null;
   flow.dispose();
   pairing = null;
+  pairingSocket?.close();
+  pairingSocket = null;
   enrollmentQr.clear();
   replacementQr.clear();
   replacementPairing = null;
@@ -153,6 +169,9 @@ function resetLifetime() {
   $('replacement-qr-dialog').close();
   session = account = null;
   pairBusy = challengeBusy = chooserBusy = appBusy = false;
+  pairingReconnect = false;
+  pairingRetryAt = pairingFailures = pairingConnectedAt = 0;
+  pairingElsewhere = false;
   autoAttempted = openingDashboard = false;
   appsKey = '';
   accountRevision++;
@@ -160,7 +179,6 @@ function resetLifetime() {
   $('app-form').reset();
   $('app-form-error').hidden = true;
   appOpener = null;
-  currentVerification = null;
   diagnostics.challenge = diagnostics.startedAt = diagnostics.endedAt = null;
   diagnostics.transport = 'Idle';
   restoringSession = false;
@@ -200,10 +218,11 @@ async function resumeSetup() {
 // Routes describe server-confirmed access; changing a URL never grants a factor.
 function renderPage(pending) {
   const page = restoringSession ? 'loading' : account ? 'dashboard' : pending ? 'loading' : 'login';
+  $('signin-stage').hidden = page === 'dashboard';
   $('login-view').hidden = page !== 'login';
   $('auth-view').hidden = page !== 'loading';
   $('dashboard-view').hidden = page !== 'dashboard';
-  document.title = `Nearkey — ${page === 'login' ? 'Set up your account' : page === 'loading' ? 'Set up your phone' : 'Your apps'}`;
+  document.title = `Nearkey — ${page === 'login' ? 'Sign in' : page === 'loading' ? 'Phone setup' : 'Your apps'}`;
   if (!restoringSession) {
     // Dashboard section anchors remain available once both factors are verified.
     const section = page === 'dashboard' && ['#overview', '#activity', '#how-it-works'].includes(location.hash);
@@ -212,38 +231,10 @@ function renderPage(pending) {
   }
   const state = flow.state;
   const phone = session?.setup?.phone;
-  let title = 'Set up your phone key.';
-  let summary = 'Scan the setup QR code, then tap “Enroll phone” in the Android app to continue to step 3.';
-  if (phone) {
-    title = phone.online ? 'Verifying your sign-in.' : 'Waiting for your phone.';
-    summary = phone.online ? 'Keep your Android app open and your phone nearby while we verify your second factor.'
-      : 'Open the Nearkey Android app to reconnect your phone and continue verification.';
-  }
-  if (state) {
-    title = challengeTitles[state.phase] || 'Verifying your sign-in.';
-    summary = state.message || summary;
-  }
-  if (replacementRequested && pending) {
-    summary = 'Verify your current phone first. Then we’ll show a setup QR code for your new phone.';
-  }
-  if (restoringSession) {
-    title = 'Checking your session…';
-    summary = 'Checking where to resume your sign-in.';
-  }
   $('auth-view').dataset.stage = restoringSession ? 'restoring' : state?.phase || 'setup';
-  $('auth-page-title').textContent = title;
-  $('auth-page-summary').textContent = summary;
-  const step = account ? 4 : restoringSession ? 0 : !pending ? 1 : phone ? 3 : 2;
-  ['account', 'enroll', 'verify', 'ready'].forEach((name, index) => {
-    const item = $(`wizard-${name}-step`);
-    item.className = index + 1 < step ? 'complete' : index + 1 === step ? 'active' : '';
-    if (index + 1 === step) item.setAttribute('aria-current', 'step');
-    else item.removeAttribute('aria-current');
-  });
-  $('wizard-step-label').textContent = restoringSession ? 'SETUP / CHECKING YOUR SESSION'
-    : `STEP ${step} / ${['', 'ACCOUNT', 'ENROLL YOUR PHONE', 'VERIFY NEARBY PHONE', 'READY'][step]}`;
-  $('auth-spinner').hidden = !(restoringSession || openingDashboard || challengeBusy
-    || flow.run && ['waiting', 'connecting', 'submitting'].includes(state?.phase));
+  $('auth-page-title').textContent = restoringSession ? 'Checking session' : phone ? 'Verify phone' : 'Connect your phone';
+  $('session-loading').hidden = !restoringSession;
+  $('wizard-layout')?.setAttribute('aria-busy', String(restoringSession));
   if (visiblePage !== page) {
     visiblePage = page;
     $(page === 'login' ? 'login-title' : page === 'loading' ? 'auth-page-title' : 'dashboard-title').focus({preventScroll: true});
@@ -258,13 +249,13 @@ function renderControls() {
   const problem = bluetooth.availability();
   const pending = session?.pending === true;
   renderPage(pending);
-  $('logout').hidden = !session?.pending && !account;
+  $('logout').hidden = !account;
+  $('back-to-login').disabled = loginBusy;
   $('credentials-panel').hidden = pending;
   $('factor-panel').hidden = !pending;
-  $('password-step').className = pending ? 'complete' : 'active';
-  $('phone-step').className = pending ? 'active' : '';
   $('login-button').disabled = loginBusy;
-  $('login-button').firstChild.textContent = loginBusy ? 'Checking your session… ' : 'Continue ';
+  $('google-signin').disabled = $('apple-signin').disabled = loginBusy;
+  $('login-button').firstChild.textContent = loginBusy ? 'Signing in… ' : 'Continue ';
   $('username').disabled = loginBusy;
   $('password').disabled = loginBusy;
   $('setup-panel').hidden = !!state;
@@ -273,23 +264,29 @@ function renderControls() {
   keyToss?.sync(!state ? 'rest' : state.phase === 'approved' ? 'finish' : running && state.phase !== 'reconnect' ? 'loop' : 'rest');
   $('enrollment').hidden = !!phone;
   $('bluetooth-setup').hidden = !phone;
+  $('factor-status').hidden = !phone;
   $('pairing').hidden = !pairing || !!phone;
-  enrollmentQr.render(pending && !phone ? pairing : null, location.origin);
-  $('pair-button').disabled = pairBusy || !pending || !!phone;
-  $('pair-button').firstChild.textContent = pairBusy ? 'Creating setup QR code… ' : pairing ? 'Get a fresh QR code ' : 'Show setup QR code ';
+  $('pairing-state').hidden = !pending || !!phone || !!pairing;
+  $('pairing-state-spinner').hidden = pairingElsewhere;
+  $('pairing-state-message').textContent = pairingElsewhere ? 'Phone setup is open in another window.'
+    : pairingReconnect ? 'Reconnecting…' : 'Preparing QR code…';
+  $('pairing-state-detail').hidden = !pairingReconnect && !pairingElsewhere;
+  $('pairing-state-detail').textContent = pairingElsewhere ? 'Continue here to show a QR code in this window.'
+    : 'Trying again automatically.';
+  $('pairing-resume').hidden = !pairingElsewhere;
+  enrollmentQr.render(pending && !phone ? pairing : null, pairing?.origin || location.origin);
   $('choose-button').disabled = chooserBusy || running || bluetooth.busy || !phone || !!problem;
-  $('choose-button').firstChild.textContent = chooserBusy ? 'Opening Bluetooth chooser… ' : bluetooth.deviceId ? 'Choose / reconnect phone ' : 'Choose your phone ';
+  $('choose-button').firstChild.textContent = chooserBusy ? 'Connecting… ' : bluetooth.deviceId ? 'Reconnect phone ' : 'Connect phone ';
   $('verify-button').disabled = challengeBusy || chooserBusy || bluetooth.busy || !phone?.online || !!problem;
-  $('verify-button').firstChild.textContent = challengeBusy ? 'Starting verification… ' : 'Verify nearby phone ';
+  $('verify-button').firstChild.textContent = challengeBusy ? 'Verifying… ' : 'Verify phone ';
   $('reconnect-button').hidden = !running || state?.phase !== 'reconnect';
   $('reconnect-button').disabled = chooserBusy || !state?.phoneReady || bluetooth.busy;
   $('cancel-button').hidden = !running;
   $('retry-button').hidden = !state || running || state.phase === 'approved';
   $('retry-button').disabled = challengeBusy || chooserBusy || bluetooth.busy || !phone?.online || !!problem;
-  $('back-button').disabled = loginBusy;
   $('bluetooth-problem').hidden = !problem;
   $('bluetooth-problem').textContent = problem || '';
-  $('add-app-button').disabled = $('add-app-plus').disabled = !account || appBusy;
+  $('add-app-button').disabled = !account || appBusy;
   $('app-save').disabled = $('app-name').disabled = $('app-url').disabled = appBusy;
   $('app-dialog-close').disabled = appBusy;
   $('replace-phone-button').hidden = !pending || !phone;
@@ -297,35 +294,31 @@ function renderControls() {
   $('dashboard-replace-phone-button').disabled = !account || appBusy || replacementBusy;
   $('replace-phone-confirm').disabled = $('replace-phone-close').disabled = replacementBusy;
   $('replacement-refresh').disabled = $('replacement-cancel').disabled = replacementBusy;
-  replacementQr.render(account ? replacementPairing : null, location.origin);
+  replacementQr.render(account ? replacementPairing : null, replacementPairing?.origin || location.origin);
   $('app-save').firstChild.textContent = appBusy ? 'Saving app… ' : 'Save app ';
   renderDebug();
 }
 
 function renderSession() {
   const phone = session?.setup?.phone;
-  if (phone && pairing) {
+  if (phone && (pairing || pairingSocket)) {
     pairing = null;
+    const socket = pairingSocket;
+    pairingSocket = null;
+    socket?.close();
+    pairingReconnect = false;
     $('pair-code').value = '';
     $('base-url').value = '';
-    notice('Phone enrolled. Keep its app open and nearby to finish your sign-in.');
+    notice();
   }
-  $('factor-title').textContent = phone ? 'Keep your phone nearby.' : 'Scan to enroll your phone.';
-  $('phone-description').textContent = phone
-    ? 'Your password is verified. Your enrolled phone must sign this login before your workspace opens.'
-    : 'Enroll your Android phone first. Then verify it nearby over Bluetooth to finish signing in.';
+  $('factor-title').textContent = phone ? 'Verify phone' : 'Connect your phone';
   $('setup-phone-name').textContent = phone?.label || 'Add your Android phone';
-  $('phone-status').textContent = phone ? phone.online ? 'Connected · ready to verify' : 'Offline · open the Android app' : 'One-time enrollment';
+  $('phone-status').textContent = phone?.online ? 'Connected' : 'Offline';
   $('setup-phone-dot').style.opacity = phone?.online ? '1' : '.3';
   $('permission-description').textContent = phone?.online
-    ? 'Keep the Android app open. Your phone signs the login challenge without a code or confirmation tap.'
-    : 'Open your enrolled Android app and connect it to Nearkey. To choose it in this browser, tap “Advertise setup for 60 seconds” on the phone first.';
+    ? 'Keep the Android app open and your phone nearby.'
+    : 'Open the Android app. Tap “Advertise setup for 60 seconds” to connect.';
   tick();
-}
-
-function dateLabel(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'Verified in this session' : date.toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
 }
 
 function appItem(app) {
@@ -339,24 +332,21 @@ function appItem(app) {
   description.className = 'site-info';
   const title = document.createElement('strong');
   title.textContent = app.name;
-  const subtitle = document.createElement('small');
-  subtitle.textContent = app.url ? new URL(app.url).host : 'Saved to your app list';
-  description.append(title, subtitle);
-  const status = document.createElement('span');
-  status.className = 'site-status';
-  status.textContent = 'Added';
-  item.append(symbol, description, status);
+  description.append(title);
+  if (app.url) {
+    const subtitle = document.createElement('small');
+    subtitle.textContent = new URL(app.url).host;
+    description.append(subtitle);
+  }
+  item.append(symbol, description);
   return item;
 }
 
 function renderAccount() {
   if (!account) return;
-  $('user-name').textContent = account.user.name;
   $('dashboard-phone-name').textContent = account.phone?.label || 'Phone key';
   $('dashboard-phone-status').textContent = account.phone?.online ? 'Online' : 'Enrolled';
-  $('dashboard-phone-detail').textContent = account.phone?.online ? 'Connected to Nearkey' : 'Open the app for your next sign-in';
   const apps = account.apps || [];
-  $('session-time').textContent = currentVerification ? `Verified ${dateLabel(currentVerification)}.` : 'Both factors verified for this session.';
   const nextKey = JSON.stringify(apps);
   if (appsKey !== nextKey) {
     appsKey = nextKey;
@@ -416,6 +406,7 @@ async function poll(currentEpoch) {
       else {
         session = result;
         renderSession();
+        if (!session.setup?.phone && !pairing) void createPairing();
         if (session.setup?.phone?.online && !bluetooth.availability() && !flow.state && !autoAttempted) void startChallenge();
       }
     }
@@ -423,7 +414,11 @@ async function poll(currentEpoch) {
     if (epoch !== currentEpoch) return;
     if (error.status === 401) return flow.onSessionLost();
     if (error.code === 'verification_required') return void resumeSetup();
-    notice(`${error.message} Status will retry shortly.`);
+    if (session?.pending && !session.setup?.phone) {
+      pairingReconnect = true;
+      renderControls();
+      observeDebug('pairing-network', 'Waiting for the server; pairing will retry.');
+    } else notice(`${error.message} Status will retry shortly.`);
   } finally {
     if (epoch === currentEpoch) schedulePoll(currentEpoch);
   }
@@ -433,12 +428,6 @@ function renderChallenge(state) {
   if (!state) return renderControls();
   $('challenge-title').textContent = challengeTitles[state.phase] || challengeTitles.waiting;
   $('challenge-message').textContent = state.message;
-  $('challenge-service').textContent = state.challenge.serviceName;
-  $('challenge-username').textContent = state.challenge.username;
-  $('delivery-status').textContent = flow.run ? state.phoneReady
-    ? 'Your phone is advertising this sign-in challenge. Keep it nearby.'
-    : 'Waiting for your phone app to advertise this sign-in challenge.'
-    : state.phase === 'approved' ? 'Both factors accepted. Opening your workspace…' : 'Your workspace remains locked until a login signature is verified.';
   tick();
 }
 
@@ -449,14 +438,15 @@ function tick() {
     $('countdown').textContent = `${seconds}s left`;
   }
   if (pairing) {
+    $('pair-time').hidden = pairing.pageScoped === true;
     const seconds = Math.max(0, Math.ceil((pairing.expiresAt - Date.now()) / 1000));
-    $('pair-time').textContent = seconds ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s. This code enrolls your phone; it does not sign you in.` : 'Code expired. Get a fresh enrollment code to continue.';
+    $('pair-time').textContent = seconds ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s` : 'Code expired. Create a new code.';
   }
   if (replacementPairing) {
     const seconds = Math.max(0, Math.ceil((replacementPairing.expiresAt - Date.now()) / 1000));
     $('replacement-time').textContent = seconds
-      ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s. Your current phone stays enrolled until the new phone finishes enrollment.`
-      : 'Code expired. Get a new QR code to continue. Your current phone is still enrolled.';
+      ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s`
+      : 'Code expired. Create a new code.';
   }
   renderControls();
 }
@@ -504,6 +494,11 @@ async function startChallenge() {
 }
 
 // User actions: Bluetooth selection stays inside a fresh click activation.
+for (const [id, provider] of [['google-signin', 'Google'], ['apple-signin', 'Apple']]) {
+  $(id).addEventListener('click', () => {
+    if (!loginBusy) notice(`${provider} sign-in isn’t available in this demo.`, {toast: true});
+  });
+}
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (loginBusy || session?.pending || account) return;
@@ -530,7 +525,7 @@ $('login-form').addEventListener('submit', async event => {
   }
 });
 
-async function logout() {
+async function logout({announce = true} = {}) {
   if (loginBusy || (!session?.pending && !account)) return;
   signOutLocally();
   const currentEpoch = epoch;
@@ -538,7 +533,7 @@ async function logout() {
   renderControls();
   try {
     await api('/api/logout', {method: 'POST', body: {}});
-    if (epoch === currentEpoch) notice('Signed out. Your next sign-in will verify both factors.');
+    if (epoch === currentEpoch && announce) notice('Signed out.', {toast: true});
   } catch (error) {
     if (epoch === currentEpoch) notice(`Server sign-out was not confirmed. ${error.message} Reload to check your session.`);
   } finally {
@@ -547,27 +542,93 @@ async function logout() {
   }
 }
 $('logout').addEventListener('click', () => void logout());
-$('back-button').addEventListener('click', () => void logout());
+$('back-to-login').addEventListener('click', () => void logout({announce: false}));
 
 async function createPairing() {
-  if (pairBusy || !session?.pending || session.setup?.phone) return;
+  if (pairBusy || pairing || pairingElsewhere || Date.now() < pairingRetryAt || !session?.pending || session.setup?.phone) return;
   const currentEpoch = epoch;
   pairBusy = true;
   notice();
   renderControls();
   try {
-    const result = await api('/api/pairing', {method: 'POST', body: {}, signal: lifetime.signal});
+    const result = await api('/api/pairing', {method: 'POST', body: {pageScoped: true}, signal: lifetime.signal});
     if (epoch !== currentEpoch || session?.setup?.phone) return;
+    const socket = await openPairingChannel(result.pairingId, currentEpoch);
+    if (epoch !== currentEpoch || session?.setup?.phone) return;
+    if (pairingSocket !== socket || socket.readyState !== WebSocket.OPEN) throw new Error('Pairing connection closed.');
     pairing = result;
+    pairingReconnect = false;
+    pairingConnectedAt = Date.now();
     renderSession();
   } catch (error) {
-    if (epoch === currentEpoch) handleError(error);
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401 || error.code === 'verification_required') return handleError(error);
+    delayPairingRetry();
+    observeDebug('pairing-network', 'Pairing connection interrupted; retrying automatically.');
   } finally {
-    if (epoch === currentEpoch) pairBusy = false;
-    renderControls();
+    if (epoch === currentEpoch) {
+      pairBusy = false;
+      renderControls();
+      schedulePoll(currentEpoch);
+    }
   }
 }
-$('pair-button').addEventListener('click', () => void createPairing());
+$('pairing-resume').addEventListener('click', () => {
+  pairingElsewhere = false;
+  pairingRetryAt = pairingFailures = 0;
+  void poll(epoch);
+});
+function delayPairingRetry() {
+  pairingReconnect = true;
+  pairingRetryAt = Date.now() + Math.min(60000, 3000 * 2 ** Math.min(pairingFailures++, 5));
+}
+function openPairingChannel(pairingId, currentEpoch) {
+  const signal = lifetime.signal;
+  const socket = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/api/pairing-channel/${pairingId}`);
+  pairingSocket?.close();
+  pairingSocket = socket;
+  socket.addEventListener('close', event => {
+    if (epoch !== currentEpoch || pairingSocket !== socket) return;
+    const wasPublished = !!pairing;
+    pairing = null;
+    pairingSocket = null;
+    if (event.code === 1000 && event.reason === 'Pairing ended') {
+      // A newer setup page owns the code, or enrollment has completed. Do not
+      // replace its code automatically; the session poll distinguishes these.
+      pairingElsewhere = true;
+    } else if (wasPublished) {
+      if (Date.now() - pairingConnectedAt > 30000) pairingFailures = 0;
+      delayPairingRetry();
+    }
+    renderControls();
+    // Enrollment also closes this channel. Confirm the session before issuing
+    // another code, so a successful enrollment advances to verification.
+    if (!pairBusy) void poll(currentEpoch);
+  });
+  return new Promise((resolve, reject) => {
+    const finish = (error) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      socket.removeEventListener('open', opened);
+      socket.removeEventListener('error', failed);
+      socket.removeEventListener('close', failed);
+      if (error) {
+        if (pairingSocket === socket) pairingSocket = null;
+        socket.close();
+        reject(error);
+      } else resolve(socket);
+    };
+    const opened = () => finish();
+    const failed = () => finish(new Error('Pairing connection interrupted.'));
+    const abort = () => finish(signal.reason);
+    const timer = setTimeout(failed, 8000);
+    socket.addEventListener('open', opened);
+    socket.addEventListener('error', failed);
+    socket.addEventListener('close', failed);
+    signal.addEventListener('abort', abort, {once: true});
+    if (signal.aborted) abort();
+  });
+}
 
 function openPhoneReplacement() {
   if (replacementBusy || (!account && !session?.setup?.phone)) return;
@@ -668,7 +729,6 @@ function openAppForm(event) {
   $('app-name').focus();
 }
 $('add-app-button').addEventListener('click', openAppForm);
-$('add-app-plus').addEventListener('click', openAppForm);
 $('app-dialog-close').addEventListener('click', () => $('app-dialog').close());
 $('app-dialog').addEventListener('cancel', event => {
   if (appBusy) event.preventDefault();
@@ -767,9 +827,32 @@ $('cancel-button').addEventListener('click', async () => {
   }
 });
 
+function animateCardSizes() {
+  if (typeof ResizeObserver === 'undefined') return () => {};
+  const card = document.querySelector('.login-card');
+  const content = card.firstElementChild;
+  let height = null;
+  const observer = new ResizeObserver(() => {
+    if (!card.getClientRects().length) return;
+    const style = getComputedStyle(card);
+    const target = content.getBoundingClientRect().height
+      + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+      + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    if (height !== null && Math.abs(target - height) < .5) return;
+    // Keep one persistent shell. CSS retargets an interrupted transition from
+    // its current size instead of cancelling and briefly revealing auto height.
+    height = target;
+    card.style.height = `${target}px`;
+  });
+  observer.observe(content);
+  return () => observer.disconnect();
+}
+
+const stopCardMotion = animateCardSizes();
 const ticker = setInterval(tick, 250);
 window.addEventListener('pagehide', () => {
   resetLifetime();
+  stopCardMotion();
   clearInterval(ticker);
 });
 window.addEventListener('pageshow', event => {

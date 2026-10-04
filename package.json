@@ -6,6 +6,8 @@
   "engines": {"node": ">=22"},
   "scripts": {
     "start": "node server/main.mjs",
+    "start:wifi": "node server/main.mjs --wifi",
+    "proposals": "node web/proposals/serve.mjs",
     "test": "node --test"
   },
   "dependencies": {

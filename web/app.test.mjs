@@ -4,9 +4,183 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {PhoneBluetooth} from './ble.mjs';
 import {ChallengeFlow} from './challenge.mjs';
+import {EnrollmentQr} from './enrollment.mjs';
 import {CONTRACT_VERSION} from '../shared/protocol.mjs';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
+
+async function pairingPage(t) {
+  const elements = new Map();
+  const pageEvents = new Map();
+  const timers = new Map();
+  const sockets = [];
+  const state = {pending: true, phone: null, offline: false, requests: 0, failOpen: false, clock: Date.now()};
+  let nextTimer = 0;
+  function element() {
+    const listeners = new Map();
+    return {listeners, children: [], firstChild: {}, style: {}, dataset: {}, value: '',
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      setAttribute() {}, removeAttribute() {}, focus() {}, close() {}, reset() {},
+      append() {}, prepend() {}, replaceChildren() {},
+    };
+  }
+  const document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, element());
+      return elements.get(id);
+    }, createElement: element,
+  };
+  class TestSocket extends EventTarget {
+    static OPEN = 1;
+    readyState = 0;
+    constructor() {
+      super();
+      sockets.push(this);
+      queueMicrotask(() => {
+        if (state.failOpen) this.close();
+        else {
+          this.readyState = 1;
+          this.dispatchEvent(new Event('open'));
+        }
+      });
+    }
+    close(code = 1006, reason = '') {
+      if (this.readyState === 3) return;
+      this.readyState = 3;
+      const event = new Event('close');
+      Object.assign(event, {code, reason});
+      this.dispatchEvent(event);
+    }
+  }
+  const context = vm.createContext({
+    document, window: {addEventListener: (name, listener) => pageEvents.set(name, listener)},
+    location: {origin: 'http://localhost:5173', hash: '#/loading', pathname: '/', search: ''},
+    history: {replaceState() {}}, performance, AbortController,
+    Date: class extends Date { static now() { return state.clock; } }, console,
+    WebSocket: TestSocket,
+    setTimeout: (fn, delay) => { const id = ++nextTimer; timers.set(id, {fn, delay}); return id; },
+    clearTimeout: id => timers.delete(id), setInterval: () => 1, clearInterval() {},
+    PhoneBluetooth: class extends PhoneBluetooth {
+      constructor(options) { super({...options, secure: false, storage: null, bluetooth: null}); }
+    }, ChallengeFlow,
+    EnrollmentQr: class extends EnrollmentQr {
+      constructor(options) { super({...options, encode: () => '<svg></svg>'}); }
+    },
+    api: async path => {
+      if (state.offline) throw new Error('Server offline');
+      if (path === '/api/session') return {pending: state.pending, setup: {phone: state.phone}};
+      if (path === '/api/pairing') {
+        state.requests++;
+        return {pairingId: `pair-${state.requests}`, pairingCode: `code-${state.requests}`, pageScoped: true};
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    },
+  });
+  const source = (await readFile(new URL('./app.mjs', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '');
+  vm.runInContext(source, context);
+  t.after(() => pageEvents.get('pagehide')());
+  await settle();
+  return {state, sockets, elements, pageEvents, context,
+    retry: async () => {
+      const entry = [...timers.entries()].find(([, timer]) => timer.delay === 3000);
+      assert.ok(entry, 'a status retry is scheduled');
+      timers.delete(entry[0]);
+      state.clock += entry[1].delay;
+      await entry[1].fn();
+      await settle();
+    },
+  };
+}
+
+test('a dropped pairing channel replaces the QR automatically and ignores stale socket events', async t => {
+  const page = await pairingPage(t);
+  assert.equal(page.elements.get('pair-code').value, 'code-1');
+  page.sockets[0].close();
+  assert.equal(page.elements.get('pair-code').value, '', 'the disconnected code is removed immediately');
+  assert.equal(page.elements.get('pairing-state').hidden, false, 'the card shows a reconnecting state');
+  assert.equal(page.elements.get('pairing-state-message').textContent, 'Reconnecting…');
+  await settle();
+  assert.equal(page.state.requests, 1, 'recovery waits before making another connection');
+  await page.retry();
+  assert.equal(page.state.requests, 2);
+  assert.equal(page.elements.get('pair-code').value, 'code-2');
+  assert.equal(page.elements.get('pairing-state').hidden, true);
+  assert.equal(page.elements.get('notice').hidden, true, 'recovery does not show a reload banner');
+  page.sockets[0].dispatchEvent(new Event('close'));
+  await settle();
+  assert.equal(page.state.requests, 2, 'an old socket cannot invalidate the replacement');
+  assert.equal(page.elements.get('pair-code').value, 'code-2');
+  page.pageEvents.get('pagehide')();
+  await settle();
+  assert.equal(page.state.requests, 2, 'closing the page must not create another pairing');
+  assert.equal(page.sockets[1].readyState, 3);
+});
+
+test('pairing recovery waits through an outage and retries when the server returns', async t => {
+  const page = await pairingPage(t);
+  page.state.offline = true;
+  page.sockets[0].close();
+  await settle();
+  assert.equal(page.elements.get('pairing-state').hidden, false);
+  assert.equal(page.elements.get('notice').hidden, true);
+  await page.retry();
+  assert.equal(page.state.requests, 1, 'an unavailable session cannot issue a new code');
+  page.state.offline = false;
+  await page.retry();
+  assert.equal(page.elements.get('pair-code').value, 'code-2');
+});
+
+test('failed pairing channel setup retries without publishing a disconnected code', async t => {
+  const page = await pairingPage(t);
+  page.state.failOpen = true;
+  page.sockets[0].close();
+  await settle();
+  await page.retry();
+  assert.equal(page.state.requests, 2);
+  assert.equal(page.elements.get('pair-code').value, '');
+  assert.equal(page.elements.get('pairing-state').hidden, false);
+  page.state.failOpen = false;
+  await page.retry();
+  assert.equal(page.state.requests, 2, 'repeated failures increase the retry delay');
+  await page.retry();
+  assert.equal(page.elements.get('pair-code').value, 'code-3');
+});
+
+test('a channel closed by successful enrollment advances without creating another pairing', async t => {
+  const page = await pairingPage(t);
+  page.state.phone = {id: 'enrolled-phone', label: 'Android phone', online: false};
+  page.sockets[0].close(1000, 'Pairing ended');
+  await settle();
+  assert.equal(page.state.requests, 1);
+  assert.equal(page.elements.get('enrollment').hidden, true);
+  assert.equal(page.elements.get('bluetooth-setup').hidden, false);
+  assert.equal(page.elements.get('factor-title').textContent, 'Verify phone');
+});
+
+test('a superseded setup page never takes the code back without a user action', async t => {
+  const page = await pairingPage(t);
+  page.sockets[0].close(1000, 'Pairing ended');
+  await settle();
+  for (let i = 0; i < 25; i++) await page.retry();
+  assert.equal(page.state.requests, 1, 'polling cannot replace the newer page’s code');
+  assert.equal(page.elements.get('pair-code').value, '');
+  assert.equal(page.elements.get('pairing-state-spinner').hidden, true);
+  assert.equal(page.elements.get('pairing-resume').hidden, false);
+  await page.elements.get('pairing-resume').listeners.get('click')();
+  await settle();
+  assert.equal(page.state.requests, 2, 'an explicit action can move setup back to this page');
+  assert.equal(page.elements.get('pair-code').value, 'code-2');
+});
+
+test('a lost sign-in session stops pairing recovery', async t => {
+  const page = await pairingPage(t);
+  page.state.pending = false;
+  page.sockets[0].close();
+  await settle();
+  assert.equal(page.state.requests, 1);
+  assert.equal(page.elements.get('auth-view').hidden, true);
+  assert.equal(page.elements.get('login-view').hidden, false);
+});
 
 // Exercise the page's real chooser, polling and challenge lifecycle together.
 // Native selection is deferred to reproduce a status update while Chrome's

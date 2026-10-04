@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f3f3ef">
+  <title>NearKey — Five theme proposals</title>
+  <style>
+    @font-face{font-family:DM;src:url('/web/fonts/dm-sans.ttf')}@font-face{font-family:Manrope;src:url('/web/fonts/manrope.ttf')}
+    *{box-sizing:border-box}body{margin:0;background:#f3f3ef;color:#232823;font:14px/1.5 DM,system-ui,sans-serif}button,a{font:inherit}button{cursor:pointer}a{color:inherit}button:focus-visible,a:focus-visible{outline:3px solid #497baa;outline-offset:4px}
+    .page{max-width:1600px;margin:auto;padding:30px 42px 38px}.masthead{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #d9dcd4;padding-bottom:22px;gap:20px}.brand{font:800 23px Manrope,sans-serif;letter-spacing:-1px;display:flex;align-items:center;gap:10px}.brand-mark{display:grid;place-items:center;background:#233b2d;color:#e0ecc9;width:30px;height:33px;border-radius:9px}.masthead small{color:#5d665d;letter-spacing:1.7px;font-size:11px}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:30px;margin:30px 0 25px}.intro h1{font:600 clamp(30px,3.6vw,47px)/1.14 Manrope,sans-serif;letter-spacing:-2px;margin:0}.intro p{max-width:400px;margin:0;color:#626b61;font-size:14px}.themes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:24px}.theme{position:relative;display:block;text-align:left;padding:16px 17px 14px;border:1px solid #d6dbd1;background:#fafbf7;border-radius:12px;min-height:126px;color:#252c24;transition:background .15s,border-color .15s}.theme[aria-pressed=true]{border-color:#2c4735;box-shadow:inset 0 0 0 1px #2c4735;background:#fff}.theme:hover{background:#fff}.theme-number{color:#70796d;font-size:11px;letter-spacing:1px}.theme strong{display:block;font:650 20px Manrope,sans-serif;letter-spacing:-.5px;margin:3px 0 1px}.theme small{font-size:11px;color:#636c61}.palette{position:absolute;right:14px;top:17px;display:flex;gap:4px}.palette i{width:11px;height:11px;border:1px solid #0001;border-radius:50%;background:var(--c)}
+    .preview-layout{display:grid;grid-template-columns:minmax(0,1fr) 236px;gap:24px;align-items:start}.preview{overflow:hidden;border:1px solid #d5d9d0;border-radius:14px;background:#fff;box-shadow:0 8px 24px #26382a06}.preview-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 17px;border-bottom:1px solid #dde1d8;background:#fafbf7}.screens{display:flex;gap:3px;flex-wrap:wrap}.screen{border:0;background:none;color:#656e62;font-size:12px;padding:8px 12px;border-radius:6px}.screen[aria-pressed=true]{background:#e6eade;color:#233923}.open{display:flex;gap:8px;white-space:nowrap;text-decoration:none;color:#52604e;font-size:12px}.frame{display:block;width:100%;height:830px;border:0}.notes{padding:6px 0}.kicker{text-transform:uppercase;color:#74806d;font-size:10px;letter-spacing:1.6px}.notes h2{font:600 26px Manrope,sans-serif;letter-spacing:-1px;margin:8px 0 12px}.notes p{color:#626e5e;font-size:13px;line-height:1.7;margin:0 0 23px}.notes h3{font-size:11px;letter-spacing:.8px;text-transform:uppercase;margin:25px 0 8px}.notes ul{list-style:none;padding:0;margin:0;color:#616d5c;font-size:12px}.notes li{padding:8px 0;border-bottom:1px solid #dce0d5}.notes .recommendation{padding:13px 0;border-top:1px solid #d6dbd0;margin-top:26px}.sample{display:flex;align-items:center;gap:7px;color:#737d6d;font-size:11px;margin-top:18px}.sample i{width:6px;height:6px;background:#83986e;border-radius:50%}.footer{display:flex;justify-content:space-between;gap:20px;margin:23px 0 0;color:#737d6d;font-size:11px}.footer a{text-underline-offset:3px}
+    @media(min-width:1500px){.frame{height:870px}}@media(max-width:1100px){.page{padding:25px}.preview-layout{grid-template-columns:minmax(0,1fr) 190px;gap:20px}.theme{padding:14px 12px}.palette{right:11px}.theme small{font-size:10px}.intro p{max-width:320px}.frame{height:870px}}@media(max-width:850px){.preview-layout{display:flex;flex-direction:column}.preview{width:100%}.notes{display:grid;grid-template-columns:1fr 1fr;gap:0 25px}.notes .kicker,.notes h2,.notes>p{grid-column:1/-1}.notes h3{margin-top:7px}.notes .recommendation{border-top:0;margin-top:0}.sample{grid-column:1/-1;margin-top:0}.themes{gap:8px}.theme{min-height:134px}.theme strong{font-size:18px}.theme small{display:block;font-size:11px}.palette{position:static;margin-top:9px}.intro p{max-width:270px}.intro h1{letter-spacing:-1.4px}.frame{height:950px}}@media(max-width:580px){.page{padding:18px 14px}.masthead{padding-bottom:17px}.masthead small{font-size:9px;letter-spacing:1px;max-width:100px;text-align:right}.intro{display:block;margin:24px 0}.intro p{max-width:none;margin-top:13px;font-size:13px}.themes{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.theme{min-height:106px;padding:11px 13px}.themes .theme:last-child{grid-column:1/-1;min-height:82px}.palette{position:absolute;top:13px;right:14px;margin:0}.theme strong{font-size:19px}.theme small{font-size:11px}.preview-toolbar{padding:10px;gap:7px;align-items:center}.screen{padding:7px 8px;font-size:11px}.open{font-size:10px;gap:4px}.notes{grid-template-columns:1fr}.notes .kicker,.notes h2,.notes>p{grid-column:auto}.footer{font-size:10px}.frame{height:1350px}}
+    @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead"><div class="brand"><span class="brand-mark">n</span>nearkey</div><small>FRONTEND / THEME STUDIES</small></header>
+    <section class="intro"><h1>Five ways to feel closer.</h1><p>One product. Five distinct directions.<br>Explore each theme across the screens you use.</p></section>
+    <nav class="themes" aria-label="Choose a theme">
+      <button class="theme" data-theme="sage" aria-pressed="true"><span class="theme-number">01</span><strong>Sage</strong><small>Quiet confidence</small><span class="palette" aria-hidden="true"><i style="--c:#174b3b"></i><i style="--c:#d9f1c7"></i><i style="--c:#f7f8f2"></i></span></button>
+      <button class="theme" data-theme="signal" aria-pressed="false"><span class="theme-number">02</span><strong>Signal</strong><small>Precision after dark</small><span class="palette" aria-hidden="true"><i style="--c:#0b1016"></i><i style="--c:#b5ffd4"></i><i style="--c:#263c47"></i></span></button>
+      <button class="theme" data-theme="paper" aria-pressed="false"><span class="theme-number">03</span><strong>Paper</strong><small>A more human key</small><span class="palette" aria-hidden="true"><i style="--c:#f4eee5"></i><i style="--c:#ae5a42"></i><i style="--c:#454a64"></i></span></button>
+      <button class="theme" data-theme="workspace" aria-pressed="false"><span class="theme-number">04</span><strong>Workspace</strong><small>Everything in its place</small><span class="palette" aria-hidden="true"><i style="--c:#f7f9fc"></i><i style="--c:#3068de"></i><i style="--c:#172944"></i></span></button>
+      <button class="theme" data-theme="studio" aria-pressed="false"><span class="theme-number">05</span><strong>Studio</strong><small>Make a clear statement</small><span class="palette" aria-hidden="true"><i style="--c:#f3f0e8"></i><i style="--c:#f56230"></i><i style="--c:#171717"></i></span></button>
+    </nav>
+    <div class="preview-layout">
+      <section class="preview" aria-label="Theme preview">
+        <div class="preview-toolbar">
+          <nav class="screens" aria-label="Preview screen"><button class="screen" data-screen-choice="login" aria-pressed="false">Sign in</button><button class="screen" data-screen-choice="verify" aria-pressed="false">Phone setup</button><button class="screen" data-screen-choice="dashboard" aria-pressed="true">Dashboard</button></nav>
+          <a class="open" id="open-theme" href="./01-sage.html" target="_blank" rel="noopener">Open theme <span aria-hidden="true">↗</span></a>
+        </div>
+        <iframe class="frame" id="theme-frame" src="./01-sage.html" title="Sage theme preview"></iframe>
+      </section>
+      <aside class="notes" aria-live="polite">
+        <span class="kicker">THE DESIGN DIRECTION</span><h2 id="theme-title">Sage</h2><p id="theme-description">A thoughtful evolution of NearKey’s green identity. Soft surfaces, generous space, and a clear phone status make security feel familiar.</p>
+        <div><h3>Design language</h3><ul id="theme-features"><li>Forest green & soft mint</li><li>Airy, rounded layouts</li><li>Device illustration as a focal point</li></ul></div>
+        <div class="recommendation"><h3>Best for</h3><p id="theme-fit">An approachable consumer product, and the smoothest transition from the current frontend.</p><h3>Consider</h3><p id="theme-tradeoff">Uses more space to keep setup clear and welcoming.</p></div>
+        <div class="sample"><i aria-hidden="true"></i>Design preview · sample data</div>
+      </aside>
+    </div>
+    <footer class="footer"><span>Click through screens. Try “Add app” in the dashboard.</span><a href="./README.md">Preview notes</a></footer>
+  </main>
+  <script type="module">
+    const themes = {
+      sage:{title:'Sage',file:'01-sage.html',description:'A thoughtful evolution of NearKey’s green identity. Soft surfaces, generous space, and a clear phone status make security feel familiar.',features:['Forest green & soft mint','Airy, rounded layouts','Device illustration as a focal point'],fit:'An approachable consumer product, and the smoothest transition from the current frontend.',tradeoff:'Uses more space to keep setup clear and welcoming.'},
+      signal:{title:'Signal',file:'02-signal.html',description:'An instrument-like view of your authenticator. A deep dark canvas, fine lines, and mint highlights make the connection flow feel precise.',features:['Midnight surfaces & acid mint','Technical typography and thin rules','Connection states in the foreground'],fit:'A technically minded audience and a memorable Bluetooth demonstration.',tradeoff:'The technical feel needs especially clear wording for first-time users.'},
+      paper:{title:'Paper',file:'03-paper.html',description:'A warmer, more personal way into security. Editorial serif type and a tactile palette put the person holding the key at the center.',features:['Ivory, terracotta & muted indigo','Expressive editorial typography','An illustrated, asymmetrical layout'],fit:'A friendly consumer brand that wants to make phone setup feel comfortable.',tradeoff:'The softer visual language is less suited to a dense administration interface.'},
+      workspace:{title:'Workspace',file:'04-workspace.html',description:'A focused home for your apps and authenticator. A steady navigation rail and structured content make the dashboard feel useful every day.',features:['White, navy & clear blue','A persistent workspace navigation','Compact and organized app listings'],fit:'Frequent use, growing app lists, and a familiar productivity experience.',tradeoff:'More navigation makes the simple setup flow feel like a larger product.'},
+      studio:{title:'Studio',file:'05-studio.html',description:'A confident graphic identity with oversized type, sharp contrast, and orange accents. NearKey becomes a memorable piece of everyday software.',features:['Warm white, black & electric orange','Bold typography and graphic shapes','Strong hierarchy with fewer details'],fit:'A distinctive launch, a pitch demo, and audiences drawn to expressive design.',tradeoff:'Bold visuals require restraint as account details and app lists grow.'}
+    };
+    const frame = document.getElementById('theme-frame');
+    const open = document.getElementById('open-theme');
+    let current = 'sage';
+    let screen = 'dashboard';
+    let loading = true;
+    let contentObserver;
+    function fitPreview() {
+      if (!frame.contentDocument?.body) return;
+      const height = Math.ceil(frame.contentDocument.body.scrollHeight);
+      frame.style.height = Math.min(3200,Math.max(700,height)) + 'px';
+    }
+    frame.addEventListener('load',() => {
+      loading = false;
+      frame.contentWindow.postMessage({type:'nearkey-proposal-screen',screen},window.location.origin);
+      contentObserver?.disconnect();
+      if (!frame.contentDocument?.body) return;
+      contentObserver = new ResizeObserver(fitPreview);
+      contentObserver.observe(frame.contentDocument.body);
+      fitPreview();
+    });
+    function selectScreen(next, notify = true) {
+      if (!['login','verify','dashboard'].includes(next)) return;
+      screen = next;
+      document.querySelectorAll('[data-screen-choice]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.screenChoice === screen)));
+      open.href = './' + themes[current].file + '?screen=' + screen;
+      if (notify) frame.contentWindow.postMessage({type:'nearkey-proposal-screen',screen},window.location.origin);
+    }
+    function selectTheme(key) {
+      if (!themes[key]) return;
+      current = key;
+      const theme = themes[key];
+      document.querySelectorAll('[data-theme]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.theme === key)));
+      document.getElementById('theme-title').textContent = theme.title;
+      document.getElementById('theme-description').textContent = theme.description;
+      document.getElementById('theme-fit').textContent = theme.fit;
+      document.getElementById('theme-tradeoff').textContent = theme.tradeoff;
+      document.getElementById('theme-features').replaceChildren(...theme.features.map(text => {const item=document.createElement('li');item.textContent=text;return item;}));
+      frame.title = theme.title + ' theme preview';
+      loading = true;
+      frame.src = './' + theme.file + '?screen=' + screen;
+      selectScreen(screen,false);
+    }
+    document.querySelectorAll('[data-theme]').forEach(button => button.addEventListener('click',() => selectTheme(button.dataset.theme)));
+    document.querySelectorAll('[data-screen-choice]').forEach(button => button.addEventListener('click',() => selectScreen(button.dataset.screenChoice)));
+    window.addEventListener('message',event => {if(!loading && event.origin === window.location.origin && event.source === frame.contentWindow && event.data?.type === 'nearkey-proposal-navigation') selectScreen(event.data.screen,false);});
+  </script>
+</body>
+</html>

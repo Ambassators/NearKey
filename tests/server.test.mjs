@@ -41,7 +41,7 @@ class Inbox {
 async function fixture(t, options = {}) {
   const {initialTime = 1_800_000_000_000, ...appOptions} = options;
   let time = initialTime;
-  const app = await createApp({now: () => time, ...appOptions});
+  const app = await createApp({username: 'demo', password: 'demo-passive-key', now: () => time, ...appOptions});
   app.server.listen(0, '127.0.0.1');
   await once(app.server, 'listening');
   t.after(() => app.close());
@@ -257,6 +257,17 @@ test('wire texts, real DER signatures and canonical SPKI enforce the shared cont
   assert.throws(() => parseSignature(Buffer.from([0x30, 7, 2, 2, 0, 1, 2, 1, 1]).toString('base64url')));
 });
 
+test('default admin credentials open only a pending login', async (t) => {
+  const f = await fixture(t, {username: undefined, password: undefined});
+  const login = await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'password'}});
+  assert.equal(login.status, 200);
+  assert.equal(login.data.authenticated, false);
+  assert.equal(login.data.pending, true);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await f.request('/api/account', {cookie})).status, 403);
+  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}})).status, 401);
+});
+
 test('password verifies only first factor; pending session cannot access provider dashboard', async (t) => {
   const f = await fixture(t);
   assert.deepEqual((await f.request('/api/session')).data, {authenticated: false, pending: false,
@@ -381,6 +392,80 @@ test('configuration rejects unsafe origins and sets Secure on HTTPS sessions', a
     headers: {Origin: 'https://auth.example'}});
   assert.equal(result.status, 200);
   assert.match(result.headers.get('set-cookie'), /; Secure$/);
+});
+
+test('Wi-Fi pairing advertises the phone origin and preserves browser-origin checks', async (t) => {
+  const phoneOrigin = 'http://172.16.7.150:5173';
+  const f = await fixture(t, {phoneOrigin});
+  const phone = await f.enrolled();
+  assert.equal(phone.pairing.origin, phoneOrigin);
+  assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie: phone.cookie,
+    headers: {Origin: phoneOrigin}})).status, 403);
+  await f.complete(phone, await f.challenge(phone));
+  const replacement = await f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie: phone.cookie});
+  assert.equal(replacement.status, 200);
+  assert.equal(replacement.data.origin, phoneOrigin);
+});
+
+async function openPairingPage(f, cookie) {
+  const result = await f.request('/api/pairing', {method: 'POST', body: {pageScoped: true}, cookie});
+  assert.equal(result.status, 200);
+  assert.equal(result.data.pageScoped, true);
+  assert.match(result.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
+  assert.ok(!result.headers.get('set-cookie').includes('Max-Age'));
+  const route = `/api/pairing-channel/${result.data.pairingId}`;
+  const ws = new WebSocket(f.base.replace('http:', 'ws:') + route, {headers: {Origin: ORIGIN, Cookie: cookie}});
+  const inbox = new Inbox(ws);
+  await once(ws, 'open');
+  assert.equal((await inbox.next()).type, 'pairing_ready');
+  return {ws, ticket: result.data, route};
+}
+
+test('page-owned pairing remains valid past both countdowns while its page is connected', async t => {
+  const f = await fixture(t);
+  const cookie = await f.login();
+  const page = await openPairingPage(f, cookie);
+  f.advance(9 * 60 * 60_000);
+  assert.equal((await f.request('/api/session', {cookie})).data.pending, true);
+  const enrollment = replacementEnrollment(page.ticket);
+  const closed = once(page.ws, 'close');
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: enrollment.body})).status, 200);
+  await closed;
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: enrollment.body})).status, 409);
+});
+
+test('closing the pairing page revokes its code and a stale close cannot revoke a newer page', async t => {
+  const f = await fixture(t);
+  const cookie = await f.login();
+  const page = await openPairingPage(f, cookie);
+  const closed = once(page.ws, 'close');
+  page.ws.close();
+  await closed;
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: replacementEnrollment(page.ticket).body})).status, 401);
+  const old = await openPairingPage(f, cookie);
+  const oldClosed = once(old.ws, 'close');
+  const current = await openPairingPage(f, cookie);
+  await oldClosed;
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: replacementEnrollment(old.ticket).body})).status, 401);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: replacementEnrollment(current.ticket).body})).status, 200);
+});
+
+test('pairing page channel requires its original session and browser origin; unopened codes expire', async t => {
+  const f = await fixture(t);
+  const cookie = await f.login();
+  const page = await openPairingPage(f, cookie);
+  const other = await f.login();
+  await rejectUpgrade(f.base, page.route, {Cookie: cookie}, 403);
+  await rejectUpgrade(f.base, page.route, {Origin: 'https://evil.example', Cookie: cookie}, 403);
+  await rejectUpgrade(f.base, page.route, {Origin: ORIGIN}, 401);
+  await rejectUpgrade(f.base, page.route, {Origin: ORIGIN, Cookie: other}, 401);
+  await rejectUpgrade(f.base, page.route, {Origin: ORIGIN, Cookie: cookie}, 409);
+  assert.equal((await f.request('/api/pairing', {method: 'POST', cookie, body: {pageScoped: false}})).status, 400);
+  const closed = once(page.ws, 'close');
+  const unopened = await f.request('/api/pairing', {method: 'POST', cookie, body: {pageScoped: true}});
+  await closed;
+  f.advance(30_001);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: replacementEnrollment(unopened.data).body})).status, 401);
 });
 
 test('trusted pairing validates real proof, canonical curve/key and bounded labels', async (t) => {

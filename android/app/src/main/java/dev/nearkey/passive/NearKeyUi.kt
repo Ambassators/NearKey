@@ -17,7 +17,6 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -83,85 +82,87 @@ class NearKeyUi(private val context: Context) {
             isFillViewport = true; clipToPadding = false; addView(content)
         }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
-    private fun branding(cancel: (() -> Unit)? = null) {
-        content.addView(row().apply {
-            addView(ImageView(context).apply {
-                setImageResource(R.drawable.ic_key); imageTintList = ColorStateList.valueOf(violet)
-                setPadding(dp(10), dp(10), dp(10), dp(10)); background = rounded(pale, 14)
-                contentDescription = "NearKey logo"
-            }, LinearLayout.LayoutParams(dp(42), dp(42)))
-            addView(label("NearKey", 21f, ink, true).apply { setPadding(dp(12), 0, 0, 0) },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            cancel?.let { addView(button("Close", true, it).apply { minWidth = 0; minimumWidth = 0 },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48))) }
-        })
-        content.space(30)
-    }
-
     fun wizard(step: Int, origin: String, code: String, manual: Boolean, loaded: Boolean,
         busy: Boolean, available: Boolean, status: String, canClose: Boolean,
-        start: () -> Unit, scan: () -> Unit, toggleManual: () -> Unit, enroll: () -> Unit,
-        bluetooth: () -> Unit, close: () -> Unit, back: () -> Unit, retry: () -> Unit,
+        start: () -> Unit, importKeys: () -> Unit, scan: () -> Unit, toggleManual: () -> Unit, enroll: () -> Unit,
+        bluetooth: () -> Unit, back: () -> Unit, retry: () -> Unit,
         edit: (String, String) -> Unit) {
         prepare()
-        branding(if (canClose) close else null)
         content.addView(row().apply {
+            background = rounded(pale, 16)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             listOf("Start", "Website", "Bluetooth").forEachIndexed { index, title ->
                 addView(label("${if (index + 1 < step) "✓" else "${index + 1}"}  $title", 12f,
                     if (index + 1 <= step) violet else muted, true).apply {
                     gravity = Gravity.CENTER; setPadding(dp(4), dp(12), dp(4), dp(12))
-                    background = rounded(if (index + 1 <= step) pale else Color.rgb(234, 237, 245), 12)
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    if (index > 0) leftMargin = dp(8)
-                })
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             }
         })
-        content.space(30)
+        if (step != 1) content.space(30)
         when (step) {
             1 -> {
-                content.copy("Your phone.\nYour key.", 38f, ink, true)
+                content.space(30)
+                content.copy("Pair a new provider", 34f, ink, true).apply {
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                }
+                content.addView(FrameLayout(context).apply {
+                    minimumHeight = dp(253)
+                    addView(SetupArtwork(context), FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(205), Gravity.CENTER))
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                statusLabel = content.copy(status, 14f).apply {
+                    setPadding(0, 0, 0, dp(18))
+                    visibility = if (status.isBlank()) View.GONE else View.VISIBLE
+                    accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                }
+                info("01", "Connect a website")
                 content.space(12)
-                content.copy("A little closer. A lot more secure. Connect a website and let your phone verify logins over Bluetooth.", 17f)
-                content.space(24)
-                content.addView(SetupArtwork(context), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(205)))
-                content.space(24)
-                info("01", "Connect a website", "Scan the setup QR code in your computer’s browser.")
-                content.space(12)
-                info("02", "Keep your phone nearby", "Keep NearKey open with Bluetooth enabled when signing in.")
+                info("02", "Keep your phone nearby")
                 content.space(28)
-                content.action("Get started", available, action = start)
+                content.action("Import keys", available, secondary = true, action = importKeys)
                 content.space(12)
-                content.copy("Your private key stays on this phone.", 13f).gravity = Gravity.CENTER
+                content.action("Get started", available, action = start)
             }
             2 -> {
-                content.copy(if (loaded) "Make it yours." else "Connect your\nfirst website.".let {
+                content.copy(if (loaded) "Connect a website." else "Connect your\nfirst website.".let {
                     if (canClose) "Connect a\nwebsite." else it
                 }, 34f, ink, true)
                 content.space(12)
                 content.copy(if (loaded) "Check the website address below, then securely connect this phone." else
                     "Open NearKey setup on your computer and scan the QR code to pair this phone.", 16f)
-                content.space(26)
-                if (loaded && !manual) {
-                    content.addView(column().apply {
+                val websiteCard = if (loaded && !manual) {
+                    column().apply {
                         setPadding(dp(22), dp(24), dp(22), dp(24)); background = rounded(Color.WHITE)
                         copy("WEBSITE TO CONNECT", 11f, violet, true); space(12)
                         copy(try { PhoneOrigin.parse(origin).host } catch (_: Exception) { origin }, 23f, ink, true)
                         space(6); copy(origin, 14f); space(16)
                         copy("Only continue if you recognize this address.", 13f)
-                    })
+                    }
                 } else {
-                    content.addView(column().apply {
+                    column().apply {
                         gravity = Gravity.CENTER; setPadding(dp(24), dp(26), dp(24), dp(26))
                         background = rounded(Color.WHITE, 24)
                         addView(SetupArtwork(context, qrOnly = true), LinearLayout.LayoutParams(dp(116), dp(116)))
-                        space(16); copy("One scan. You’re connected.", 17f, ink, true).gravity = Gravity.CENTER
-                        space(8); copy("The QR code fills in your setup details.", 14f).gravity = Gravity.CENTER
-                    })
+                    }
                 }
-                content.space(20)
-                content.action(if (loaded) "Scan a different QR code" else "Scan setup QR code", available && !busy,
-                    secondary = loaded, action = scan)
-                content.space(12)
+                content.addView(FrameLayout(context).apply {
+                    setPadding(0, dp(24), 0, dp(24))
+                    addView(websiteCard, FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                statusLabel = content.copy(status, 14f).apply {
+                    setPadding(0, 0, 0, dp(18))
+                    visibility = if (status.isBlank()) View.GONE else View.VISIBLE
+                    accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                }
+                if (!loaded) {
+                    content.action("Scan setup QR code", available && !busy, action = scan)
+                    content.space(12)
+                }
                 if (manual) {
                     val fields = column()
                     val address = input("Website server address", origin, false)
@@ -181,8 +182,10 @@ class NearKeyUi(private val context: Context) {
                     content.action(if (busy) "Connecting website…" else "Connect website", available && !busy, action = enroll)
                     content.space(12)
                 }
-                content.action(if (manual) "Hide manual details" else "Enter details manually", available && !busy, true, toggleManual)
-                content.space(14)
+                if (!loaded) {
+                    content.action(if (manual) "Hide manual details" else "Enter details manually", available && !busy, true, toggleManual)
+                    content.space(14)
+                }
                 content.action("Back", available && !busy, true, back)
             }
             3 -> {
@@ -197,13 +200,14 @@ class NearKeyUi(private val context: Context) {
                 content.action("Connect Bluetooth & finish", available, action = bluetooth)
                 content.space(12)
                 content.action("Retry website connection", available, true, retry)
-                content.space(14)
-                content.copy("The websites list opens automatically when Bluetooth is ready.", 13f).gravity = Gravity.CENTER
             }
         }
-        content.space(18)
-        statusLabel = content.copy(status, 14f).apply {
-            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        if (step == 3) {
+            content.space(18)
+            statusLabel = content.copy(status, 14f).apply {
+                visibility = if (status.isBlank()) View.GONE else View.VISIBLE
+                accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            }
         }
     }
 
@@ -215,20 +219,22 @@ class NearKeyUi(private val context: Context) {
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
-    private fun info(number: String, title: String, description: String) {
+    private fun info(number: String, title: String, description: String? = null) {
         content.addView(row().apply {
-            gravity = Gravity.TOP; background = rounded(Color.WHITE, 20); setPadding(dp(18), dp(20), dp(18), dp(20))
+            gravity = if (description == null) Gravity.CENTER_VERTICAL else Gravity.TOP
+            background = rounded(Color.WHITE, 20); setPadding(dp(18), dp(20), dp(18), dp(20))
             addView(label(number, 15f, violet, true).apply { gravity = Gravity.CENTER; background = rounded(pale, 12) },
                 LinearLayout.LayoutParams(dp(36), dp(36)))
             addView(column().apply {
-                setPadding(dp(14), 0, 0, 0); copy(title, 16f, ink, true); space(5); copy(description, 14f)
+                setPadding(dp(14), 0, 0, 0); copy(title, 16f, ink, true)
+                description?.let { space(5); copy(it, 14f) }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         })
     }
 
     fun websites(sites: List<ConnectedWebsite>, statuses: Map<String, Pair<Boolean, String>>,
         login: String, message: String, add: () -> Unit, details: (ConnectedWebsite) -> Unit) {
-        prepare(122); branding()
+        prepare(122)
         content.copy("Your websites", 34f, ink, true); content.space(10)
         content.copy("${sites.size} connected ${if (sites.size == 1) "website" else "websites"}. One key, always with you.", 16f)
         content.space(26)
@@ -270,7 +276,12 @@ class NearKeyUi(private val context: Context) {
         updateConnections(statuses)
     }
 
-    fun updateStatus(message: String) { statusLabel?.text = message }
+    fun updateStatus(message: String) {
+        statusLabel?.apply {
+            text = message
+            visibility = if (message.isBlank()) View.GONE else View.VISIBLE
+        }
+    }
     fun updateLogin(value: String) { if (loginLabel?.text?.toString() != value) loginLabel?.text = value }
     fun updateConnections(statuses: Map<String, Pair<Boolean, String>>) {
         connectionLabels.forEach { (origin, label) ->
@@ -287,7 +298,8 @@ private class SetupArtwork @JvmOverloads constructor(context: Context, private v
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val scale = minOf(width / (if (qrOnly) 116f else 310f), height / (if (qrOnly) 116f else 205f))
-        canvas.save(); canvas.translate((width - scale * if (qrOnly) 116 else 310) / 2f, 0f); canvas.scale(scale, scale)
+        canvas.save(); canvas.translate((width - scale * if (qrOnly) 116 else 310) / 2f,
+            (height - scale * if (qrOnly) 116 else 205) / 2f); canvas.scale(scale, scale)
         fun rect(x: Float, y: Float, w: Float, h: Float, radius: Float, color: String) {
             paint.color = Color.parseColor(color); canvas.drawRoundRect(x, y, x + w, y + h, radius, radius, paint)
         }

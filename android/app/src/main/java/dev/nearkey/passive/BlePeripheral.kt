@@ -24,7 +24,7 @@ import java.util.UUID
 class BlePeripheral(
     private val context: Context,
     private val handler: Handler,
-    private val challenge: Challenge?, // null is chooser-only setup; never signs
+    private var challenge: Challenge?, // null is chooser-only setup; never signs
     private val sign: (String) -> String,
     private val onReady: () -> Unit,
     private val onStatus: (String) -> Unit,
@@ -37,11 +37,43 @@ class BlePeripheral(
     private val buffer = RequestBuffer()
     private var proof: ByteArray? = null
     private var advertisement: AdvertiseCallback? = null
+    private var advertisingReady = false
     private var stopAtElapsed = 0L
-    private val expire = Runnable { fail("Bluetooth window expired") }
+    private val expire = Runnable {
+        setChallenge(null)
+        onStatus("Login request expired. Ready for the next sign-in.")
+    }
 
-    private fun live(): Boolean = active && SystemClock.elapsedRealtime() < stopAtElapsed &&
-        (challenge == null || System.currentTimeMillis() < challenge.expiresAt)
+    private fun live(): Boolean = active && (challenge == null ||
+        (SystemClock.elapsedRealtime() < stopAtElapsed && System.currentTimeMillis() < challenge!!.expiresAt))
+
+    // Retain the foreground GATT service and advertisement between logins. Restarting
+    // the advertiser changes Android's private BLE address, stranding Chrome's device.
+    // Only the authenticated channel installs a challenge; idle mode cannot sign.
+    fun setChallenge(next: Challenge?) {
+        if (!active) return
+        if (next != null && challenge?.id == next.id && stopAtElapsed != 0L) {
+            require(challenge == next) { "Server changed an immutable challenge" }
+            if (live() && advertisingReady) onReady()
+            return // A repeated readiness request must never extend the deadline.
+        }
+        val remaining = next?.let { it.expiresAt - System.currentTimeMillis() }
+        require(remaining == null || remaining in 1..60_000) { "Challenge expired or phone clock is incorrect" }
+        handler.removeCallbacks(expire)
+        buffer.clear(); proof = null
+        challenge = next
+        stopAtElapsed = if (remaining == null) Long.MAX_VALUE else SystemClock.elapsedRealtime() + remaining
+        if (remaining != null) handler.postDelayed(expire, remaining)
+        if (next == null) {
+            try { peer?.let { server?.cancelConnection(it) } }
+            catch (_: SecurityException) { fail("Bluetooth permission was revoked"); return }
+            onStatus("Bluetooth ready for the next sign-in")
+        }
+        if (advertisingReady) {
+            if (next != null) onStatus("Advertising for pending challenge")
+            onReady()
+        }
+    }
 
     fun start() {
         try {
@@ -50,10 +82,8 @@ class BlePeripheral(
             check(adapter.isEnabled) { "Bluetooth is disabled. Enable it in phone settings." }
             check(adapter.isMultipleAdvertisementSupported) { "This phone does not support BLE peripheral advertising" }
             advertiser = adapter.bluetoothLeAdvertiser ?: error("BLE advertiser unavailable")
-            val remaining = challenge?.let { it.expiresAt - System.currentTimeMillis() } ?: 60_000L
-            check(remaining in 1..60_000) { "Challenge expired or phone clock is incorrect" }
-            stopAtElapsed = SystemClock.elapsedRealtime() + remaining
             active = true
+            setChallenge(challenge)
             server = manager.openGattServer(context, callback) ?: error("Cannot open GATT server")
             val service = BluetoothGattService(UUID.fromString(Protocol.SERVICE), BluetoothGattService.SERVICE_TYPE_PRIMARY)
             service.addCharacteristic(BluetoothGattCharacteristic(UUID.fromString(Protocol.REQUEST),
@@ -61,13 +91,12 @@ class BlePeripheral(
             service.addCharacteristic(BluetoothGattCharacteristic(UUID.fromString(Protocol.PROOF),
                 BluetoothGattCharacteristic.PROPERTY_READ, BluetoothGattCharacteristic.PERMISSION_READ))
             check(server!!.addService(service)) { "Cannot add GATT service" }
-            handler.postDelayed(expire, remaining)
             onStatus("Preparing GATT service")
         } catch (e: Exception) { fail(e.message ?: "Bluetooth setup failed") }
     }
 
     private fun advertise() {
-        if (!live() || peer != null || advertisement != null) return
+        if (!active || advertisement != null) return
         try {
             val bleAdvertiser = advertiser ?: error("BLE advertiser unavailable")
             val deviceName = context.getSystemService(BluetoothManager::class.java)?.adapter?.name
@@ -79,12 +108,12 @@ class BlePeripheral(
             val cb = object : AdvertiseCallback() {
                 override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
                     handler.post {
-                        if (advertisement !== this || !live()) {
+                        if (advertisement !== this || !active) {
                             try { bleAdvertiser.stopAdvertising(this) } catch (_: Exception) { }
                             return@post
                         }
-                        if (peer != null) stopAdvertising()
-                        else onStatus(if (challenge == null) "Setup advertising (60 seconds; no signing)" else "Advertising for pending challenge")
+                        advertisingReady = true
+                        onStatus(if (challenge == null) "Bluetooth ready (no pending login; signing disabled)" else "Advertising for pending challenge")
                         if (!active) return@post
                         // Only actual onStartSuccess earns a readiness ACK; starting GATT is not enough.
                         onReady()
@@ -101,10 +130,9 @@ class BlePeripheral(
                 }
             }
             advertisement = cb
-            val remaining = (stopAtElapsed - SystemClock.elapsedRealtime()).coerceIn(1, 60_000).toInt()
             val settings = AdvertiseSettings.Builder().setConnectable(true)
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).setTimeout(remaining).build()
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).setTimeout(0).build()
             // Keep the service UUID in the primary packet so browser service filters still match.
             val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(UUID.fromString(Protocol.SERVICE)))
                 .setIncludeDeviceName(false).setIncludeTxPowerLevel(false).build()
@@ -139,14 +167,13 @@ class BlePeripheral(
                         if (peer == device) return@post
                         peer = device
                         buffer.clear(); proof = null
-                        stopAdvertising()
                         if (!active) return@post
                         onStatus(if (challenge == null) "Setup central connected; signing disabled" else "Central connected; waiting for handshake")
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED && peer == device) {
                         peer = null
                         buffer.clear(); proof = null
                         onStatus("Central disconnected")
-                        if (live()) advertise() else fail("Bluetooth window expired")
+                        if (active) advertise()
                     }
                 } catch (e: Exception) { fail(e.message ?: "Bluetooth connection failed") }
             }
@@ -165,17 +192,18 @@ class BlePeripheral(
                 }
                 var status = BluetoothGatt.GATT_SUCCESS
                 try {
-                    require(live() && peer == device && challenge != null) { "No live pending challenge" }
+                    val current = challenge
+                    require(live() && peer == device && current != null) { "No live pending challenge" }
                     require(characteristic.uuid == UUID.fromString(Protocol.REQUEST) && responseNeeded &&
                         !preparedWrite && offset == 0) { "Only request writes with response are supported" }
                     val frame = buffer.append(chunk)
                     if (frame != null) {
-                        Protocol.checkRequest(frame, challenge, System.currentTimeMillis())
+                        Protocol.checkRequest(frame, current, System.currentTimeMillis())
                         check(live()) { "Challenge expired" }
                         // Sign ONLY immutable state received from the authenticated phone channel.
-                        val signature = sign(Protocol.approvalText(challenge))
+                        val signature = sign(Protocol.approvalText(current))
                         check(live()) { "Challenge expired during signing" }
-                        proof = Protocol.proof(challenge, signature).also { check(it.size <= 512) }
+                        proof = Protocol.proof(current, signature).also { check(it.size <= 512) }
                         onStatus("Proof ready for browser relay")
                     }
                 } catch (_: Exception) {
@@ -225,6 +253,7 @@ class BlePeripheral(
     }
 
     private fun stopAdvertising() {
+        advertisingReady = false
         val cb = advertisement
         advertisement = null
         try {

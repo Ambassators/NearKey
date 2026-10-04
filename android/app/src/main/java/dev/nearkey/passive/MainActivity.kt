@@ -20,7 +20,7 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
-    private val enrollmentApi = PhoneApi()
+    private val enrollmentApi by lazy { PhoneApi(this) }
     private val key = SigningKey()
     private val prefs by lazy { getSharedPreferences("phone", MODE_PRIVATE) }
     private val store by lazy { WebsiteStore(prefs) }
@@ -96,8 +96,8 @@ class MainActivity : ComponentActivity() {
             override fun handleOnBackPressed() {
                 if (enrolling) return
                 when {
+                    wizardStep == 2 -> backFromWebsite()
                     wizardStep > 0 && websites.isNotEmpty() -> closeWizard()
-                    wizardStep == 2 -> { wizardStep = 1; render() }
                     else -> { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
                 }
             }
@@ -117,16 +117,24 @@ class MainActivity : ComponentActivity() {
         } else {
             ui.wizard(wizardStep, manualOrigin, manualCode, manualExpanded, setupLoaded, enrolling,
                 foreground && !storageError, status, websites.isNotEmpty(),
-                start = { wizardStep = 2; render() }, scan = ::scan,
+                start = { wizardStep = 2; render() }, importKeys = ::showKeyImport, scan = ::scan,
                 toggleManual = { manualExpanded = !manualExpanded; render() }, enroll = ::enroll,
-                bluetooth = ::setupBluetooth, close = ::closeWizard,
-                back = { if (websites.isEmpty()) { wizardStep = 1; render() } else closeWizard() },
+                bluetooth = ::setupBluetooth,
+                back = ::backFromWebsite,
                 retry = { setupOrigin?.let { connections[it]?.retry() } },
                 edit = { origin, code ->
                     manualOrigin = origin; manualCode = code
                     if (setupLoaded) { setupLoaded = false; draft.clear() }
                 })
         }
+    }
+
+    private fun showKeyImport() {
+        AlertDialog.Builder(this)
+            .setTitle("Import keys")
+            .setMessage("Key import is not available yet.")
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun setStatus(message: String) { status = message; ui.updateStatus(message) }
@@ -149,6 +157,19 @@ class MainActivity : ComponentActivity() {
         if (enrolling || websites.isEmpty()) return
         draft.clear(); manualCode = ""; setupLoaded = false; manualExpanded = false
         wizardStep = 0; render()
+    }
+
+    private fun backFromWebsite() {
+        if (enrolling) return
+        if (setupLoaded || manualExpanded) {
+            draft.clear()
+            manualOrigin = ""; manualCode = ""; setupLoaded = false; manualExpanded = false
+            status = ""; wizardStep = 2; render()
+        } else if (websites.isEmpty()) {
+            wizardStep = 1; render()
+        } else {
+            closeWizard()
+        }
     }
 
     private fun scan() {
@@ -234,8 +255,12 @@ class MainActivity : ComponentActivity() {
             enrollmentApi.post(origin, "/api/phones/enroll", request) { result, error -> handler.post {
                 if (!foreground || generation != epoch) return@post
                 enrolling = false
+                if (result == null) {
+                    status = error ?: "Enrollment failed"
+                    render()
+                    return@post
+                }
                 try {
-                    check(result != null) { error ?: "Enrollment failed" }
                     val phoneId = requireNotNull(result.opt("phoneId") as? String) { "Invalid enrollment response" }
                     val token = requireNotNull(result.opt("deviceToken") as? String) { "Invalid enrollment response" }
                     require(phoneId.isNotBlank() && phoneId.length <= 128 && token.isNotEmpty() &&
@@ -252,15 +277,23 @@ class MainActivity : ComponentActivity() {
                 }
                 render()
             } }
-        } catch (e: Exception) { setStatus(e.message ?: "Enrollment failed") }
+        } catch (e: Exception) {
+            enrolling = false
+            status = e.message ?: "Enrollment failed"
+            render()
+        }
     }
 
     private fun addConnection(site: ConnectedWebsite): WebsiteConnection {
-        val connection = WebsiteConnection(site, handler, key,
+        val connection = WebsiteConnection(this, site, handler, key,
             changed = {
                 ui.updateConnections(connectionStates())
                 ui.updateLogin(loginDescription())
                 completeSetupIfReady()
+                if (foreground && ble == null && hasPermissions() &&
+                    websites.any { it.setupComplete && connections[it.origin]?.online == true }) {
+                    startBluetooth(activeLogin)
+                }
             }, challengeReceived = ::receiveChallenge,
             challengeCancelled = { owner, id ->
                 if (waiting[owner.website.origin]?.challenge?.id == id) {
@@ -272,6 +305,7 @@ class MainActivity : ComponentActivity() {
                     if (wizardStep == 3) setStatus(owner.status)
                 }
                 clearLogin(owner, "Website connection closed. Reconnect to verify logins.")
+                if (connections.values.none { it.online }) stopBluetooth("Waiting for website connection")
             })
         connections[site.origin] = connection
         return connection
@@ -300,7 +334,9 @@ class MainActivity : ComponentActivity() {
     private fun clearLogin(owner: WebsiteConnection, message: String) {
         val removed = waiting.remove(owner.website.origin)
         if (removed != null && activeLogin === removed) {
-            activeLogin = null; stopBluetooth(message)
+            activeLogin = null; readyInFlight = null
+            ble?.setChallenge(null)
+            bluetoothStatus = message
             ui.updateLogin(loginDescription()); activateNextLogin()
         }
     }
@@ -326,19 +362,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startBluetooth(login: PendingLogin?) {
-        if (!foreground || activeLogin !== login || (login == null && setupOrigin == null)) return
+        if (!foreground || activeLogin !== login || (login == null && setupOrigin == null &&
+            websites.none { it.setupComplete && connections[it.origin]?.online == true })) return
         if (login != null && (!login.owner.online || login.remaining() <= 0)) {
             clearLogin(login.owner, "Login request expired"); return
         }
         if (!hasPermissions()) { withPermissions { startBluetooth(login) }; return }
-        stopBluetooth("Starting Bluetooth…")
-        val setup = setupOrigin
+        ble?.let { it.setChallenge(login?.challenge); return }
+        bluetoothStatus = "Starting Bluetooth…"
         lateinit var peripheral: BlePeripheral
         peripheral = BlePeripheral(this, handler, login?.challenge, key::sign,
             onReady = {
-                if (foreground && ble === peripheral && activeLogin === login) {
-                    if (login != null) acknowledgeReady(login)
-                    if (setup != null && (login == null || login.owner.website.origin == setup)) {
+                if (foreground && ble === peripheral) {
+                    val current = activeLogin
+                    val setup = setupOrigin
+                    if (current != null) acknowledgeReady(current)
+                    if (setup != null && (current == null || current.owner.website.origin == setup)) {
                         bluetoothReadyOrigin = setup
                         completeSetupIfReady()
                     }

@@ -31,7 +31,7 @@ export class ChallengeFlow {
       attempted: false, attempting: false, polling: false, pollTimer: null, deadline: null};
     this.run = run;
     this.state = {challenge: immutable, phase: 'waiting', phoneReady: false,
-      message: 'Delivering the server challenge to your foreground phone app.', receipt: null};
+      message: 'Keep the Android app open and your phone nearby.', receipt: null};
     if (Date.now() < immutable.expiresAt) {
       run.deadline = setTimeout(() => this.finish(run, 'expired'), immutable.expiresAt - Date.now());
     }
@@ -74,8 +74,8 @@ export class ChallengeFlow {
       run.ready = data.phoneReady === true;
       this.update(run, {phoneReady: run.ready,
         ...(this.state.phase === 'waiting' ? {message: run.ready
-          ? 'Phone is advertising. Connecting to your permitted Bluetooth device…'
-          : 'Waiting for the phone to start advertising. Keep its app in the foreground.'} : {}),
+          ? 'Connecting over Bluetooth…'
+          : 'Keep the Android app open and your phone nearby.'} : {}),
       });
       if (run.ready && !run.attempted) void this.attempt(run);
     } catch (error) {
@@ -103,14 +103,14 @@ export class ChallengeFlow {
     run.attempting = true;
     run.attempted = true;
     this.update(run, {phase: 'connecting', message: choose
-      ? 'Choose the enrolled phone. It must be advertising this challenge.'
-      : 'Waiting for Bluetooth handshake. Your phone signs passively; no phone confirmation is needed.'});
+      ? 'Select your enrolled phone.'
+      : 'Keep your phone nearby while it connects.'});
     try {
       if (choose) await this.bluetooth.choose();
       if (!this.live(run)) return;
       const signature = await this.bluetooth.prove(run.challenge, run.controller.signal);
       if (!this.live(run)) return;
-      this.update(run, {phase: 'submitting', message: 'Phone signed. Verifying your second factor…'});
+      this.update(run, {phase: 'submitting', message: 'Checking phone verification…'});
       const result = await this.api(`/api/challenges/${encodeURIComponent(run.challenge.id)}/complete`, {
         method: 'POST', body: {signature}, signal: run.controller.signal,
       });
@@ -127,7 +127,7 @@ export class ChallengeFlow {
         return;
       }
       this.update(run, {phase: 'reconnect', message: error.name === 'NotFoundError'
-        ? 'No phone selected. Choose / reconnect phone to retry the same pending challenge.'
+        ? 'No phone selected. Tap “Reconnect phone” to try again.'
         : error.message});
     } finally {
       run.attempting = false;
@@ -158,8 +158,8 @@ export class ChallengeFlow {
     this.stop(run);
     this.run = null;
     this.state = {...this.state, phase, receipt, message: message || {
-      approved: 'Login verified. Your phone completed the Bluetooth second factor.',
-      expired: 'The 60-second login challenge expired. Start a new verification to retry.',
+      approved: 'Opening your apps…',
+      expired: 'Tap “Try again” to continue.',
       cancelled: 'Login verification stopped. Any proof already submitted will be checked against your session.',
     }[phase]};
     this.emit();

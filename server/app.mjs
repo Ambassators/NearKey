@@ -6,6 +6,7 @@ import path from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { approvalText, enrollmentText, CONTRACT_VERSION, CHALLENGE_TTL_MS } from '../shared/protocol.mjs';
 import { randomToken, parsePublicKey, verifyProof, passwordRecord, passwordMatches } from './crypto.mjs';
+import { validatePhoneOrigin } from './network.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SESSION_TTL_MS = 8 * 60 * 60_000;
@@ -166,9 +167,10 @@ async function staticFiles(root) {
   return files;
 }
 
-export async function createApp({publicOrigin = 'http://localhost:5173', username = 'demo',
-  password = 'demo-passive-key', now = Date.now, root = ROOT} = {}) {
+export async function createApp({publicOrigin = 'http://localhost:5173', phoneOrigin = publicOrigin, username = 'admin',
+  password = 'password', now = Date.now, root = ROOT} = {}) {
   validateOrigin(publicOrigin);
+  validatePhoneOrigin(phoneOrigin);
   if (typeof username !== 'string' || !username.trim() || username.length > 80 || /[\r\n]/.test(username)) {
     throw new Error('Demo username must contain 1–80 characters without line breaks');
   }
@@ -185,7 +187,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   const apps = [];
   let closing = false;
 
-  const cookie = (token = '') => `nearkey_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token ? SESSION_TTL_MS / 1000 : 0}${publicOrigin.startsWith('https:') ? '; Secure' : ''}`;
+  const cookie = (token = '', {sessionOnly = false} = {}) => `nearkey_session=${token}; Path=/; HttpOnly; SameSite=Strict${sessionOnly && token ? '' : `; Max-Age=${token ? SESSION_TTL_MS / 1000 : 0}`}${publicOrigin.startsWith('https:') ? '; Secure' : ''}`;
   function sendPhone(message, socket = phone?.socket) {
     if (socket?.readyState !== WebSocket.OPEN) return;
     // A transport failure must not turn an already committed API operation into a 500.
@@ -202,17 +204,27 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   }
   function revokeSession(token) {
     sessions.delete(token);
-    if (pairing?.session === token) pairing = null;
+    if (pairing?.session === token) clearPairing();
     for (const record of challenges.values()) {
       if (record.session === token) endChallenge(record, 'cancelled');
     }
   }
+  function clearPairing() {
+    const previous = pairing;
+    pairing = null;
+    previous?.socket?.close(1000, 'Pairing ended');
+  }
   function sweep() {
     const time = now();
+    // A page-owned code remains live only while its browser connection is open.
+    if (pairing?.pageScoped && pairing.socket?.readyState === WebSocket.OPEN) {
+      const login = sessions.get(pairing.session);
+      if (login?.verifiedAt === null) login.expiresAt = time + PENDING_SESSION_TTL_MS;
+    }
     for (const [token, session] of sessions) if (session.expiresAt <= time) revokeSession(token);
-    if (pairing?.expiresAt <= time) pairing = null;
+    if (pairing?.expiresAt <= time) clearPairing();
     if (pairing?.replacementPhoneId && (phone?.id !== pairing.replacementPhoneId
-        || sessions.get(pairing.session)?.verifiedAt == null)) pairing = null;
+        || sessions.get(pairing.session)?.verifiedAt == null)) clearPairing();
     for (const record of challenges.values()) {
       if (pending(record) && record.challenge.expiresAt <= time) endChallenge(record, 'expired');
     }
@@ -388,7 +400,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
           if (oldSocket) oldSocket.terminate();
         }
         phone = {id: randomUUID(), label: body.label.trim(), key, deviceToken: randomToken(), socket: null};
-        pairing = null;
+        clearPairing();
         json(res, 200, {phoneId: phone.id, deviceToken: phone.deviceToken});
         return;
       }
@@ -442,13 +454,19 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         return;
       }
       if (req.method === 'POST' && route === '/api/pairing') {
-        exactFields(await readJson(req), []);
+        const body = await readJson(req);
+        exactFields(body, Object.hasOwn(body || {}, 'pageScoped') ? ['pageScoped'] : []);
+        if (Object.hasOwn(body, 'pageScoped') && body.pageScoped !== true) fail(400, 'invalid_body', 'pageScoped must be true');
         sweep();
         if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
         if (phone) fail(409, 'phone_exists', 'Use Connect a different phone from a verified browser session');
-        pairing = {pairingId: randomUUID(), pairingCode: randomToken(), expiresAt: now() + PAIRING_TTL_MS, session};
+        clearPairing();
+        pairing = {pairingId: randomUUID(), pairingCode: randomToken(),
+          expiresAt: now() + (body.pageScoped ? 30_000 : PAIRING_TTL_MS), session,
+          ...(body.pageScoped ? {pageScoped: true} : {})};
         const {pairingId, pairingCode, expiresAt} = pairing;
-        json(res, 200, {pairingId, pairingCode, expiresAt});
+        json(res, 200, {pairingId, pairingCode, expiresAt, origin: phoneOrigin, ...(pairing.pageScoped ? {pageScoped: true} : {})},
+          pairing.pageScoped ? {'Set-Cookie': cookie(session, {sessionOnly: true})} : {});
         return;
       }
       if (req.method === 'POST' && ['/api/phones/replacement', '/api/phones/replacement/cancel'].includes(route)) {
@@ -458,15 +476,16 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
         requireAuthenticated(session);
         if (route.endsWith('/cancel')) {
-          if (pairing?.replacementPhoneId && pairing.session === session) pairing = null;
+          if (pairing?.replacementPhoneId && pairing.session === session) clearPairing();
           json(res, 200, {ok: true});
           return;
         }
         if (!phone) fail(409, 'phone_required', 'Enroll a phone before replacing it');
+        clearPairing();
         pairing = {pairingId: randomUUID(), pairingCode: randomToken(), expiresAt: now() + PAIRING_TTL_MS,
           session, replacementPhoneId: phone.id};
         const {pairingId, pairingCode, expiresAt} = pairing;
-        json(res, 200, {pairingId, pairingCode, expiresAt});
+        json(res, 200, {pairingId, pairingCode, expiresAt, origin: phoneOrigin});
         return;
       }
       if (req.method === 'POST' && route === '/api/challenges') {
@@ -565,6 +584,27 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
       if (closing) fail(503, 'server_closing', 'Server is shutting down');
       sweep();
       rateLimit(req, 'upgrade', 20);
+      if (/^\/api\/pairing-channel\/[0-9a-f-]{36}$/.test(req.url)) {
+        sameOrigin(req, true);
+        const session = requireSession(req);
+        const pairingId = req.url.slice('/api/pairing-channel/'.length);
+        if (!pairing?.pageScoped || pairing.pairingId !== pairingId || pairing.session !== session) {
+          fail(401, 'invalid_pairing', 'Pairing page is no longer active');
+        }
+        if (pairing.socket) fail(409, 'channel_exists', 'Pairing page is already connected');
+        const owner = pairing;
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          owner.socket = ws;
+          owner.expiresAt = Infinity;
+          ws.alive = true;
+          ws.on('error', () => {});
+          ws.on('pong', () => { ws.alive = true; });
+          ws.on('message', () => ws.close(1008, 'No messages supported'));
+          ws.on('close', () => { if (pairing === owner) clearPairing(); });
+          ws.send(JSON.stringify({type: 'pairing_ready'}));
+        });
+        return;
+      }
       if (req.url !== '/api/phone-channel' || req.headers.origin !== undefined) {
         fail(403, 'channel_rejected', 'Native phone channel only');
       }
@@ -621,7 +661,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
       if (ws.readyState !== WebSocket.OPEN) continue;
-      if (!ws.alive || phone?.socket !== ws) { ws.terminate(); continue; }
+      if (!ws.alive || (phone?.socket !== ws && pairing?.socket !== ws)) { ws.terminate(); continue; }
       ws.alive = false;
       ws.messageCount = 0;
       try { ws.ping(); } catch { ws.terminate(); }

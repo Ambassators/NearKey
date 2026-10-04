@@ -68,6 +68,26 @@ test('expiry clears QR and manual fields at the precise deadline, including late
   assert.equal(f.container.innerHTML, '');
 });
 
+test('page-owned QR stays visible without a countdown deadline and clears on page disposal', () => {
+  const f = fixture(url => `<svg>${url}</svg>`);
+  f.qr.render({...pairing(), pageScoped: true}, origin, 60 * 60_000);
+  assert.equal(f.container.hidden, false);
+  assert.equal(f.codeInput.value, 'temporary-code');
+  assert.equal(f.message.textContent, '');
+  f.qr.clear();
+  assert.equal(f.container.hidden, true);
+  assert.equal(f.codeInput.value, '');
+});
+
+test('local network pairing explains the Wi-Fi prerequisite and clears it with the QR', () => {
+  const f = fixture(url => `<svg>${url}</svg>`);
+  f.qr.render({...pairing(), pageScoped: true}, 'http://172.16.7.150:5173', 0);
+  assert.match(f.message.textContent, /same Wi-Fi network/);
+  assert.match(f.message.textContent, /Connect website/);
+  f.qr.clear();
+  assert.equal(f.message.textContent, '');
+});
+
 test('enrollment, logout or page disposal removes all rendered enrollment material', () => {
   const f = fixture(url => `<svg>${url}</svg>`);
   f.qr.render(pairing(), origin, 0);

@@ -97,6 +97,15 @@ server origin and code; review them and tap **Connect website** to submit enroll
 
 ## Demo setup
 
+For Wi-Fi debug setup, run `npm run start:wifi` on the computer and connect the
+phone to the same Wi-Fi network before scanning the QR. Keep the Mac browser at
+`http://localhost:5173`; the QR supplies the computer's private network address
+to the phone. Local-address HTTP and WebSocket traffic uses the phone's Wi-Fi
+network even when Android selects cellular for internet access. No USB forwarding
+is needed. Guest Wi-Fi can block connections between devices; use a shared
+hotspot if the phone cannot reach the computer. The app reports missing Wi-Fi
+before sending enrollment and reconnects enrolled websites after Wi-Fi returns.
+
 1. Use the USB debug workflow above or deploy the server at a reachable HTTPS
    origin with a trusted certificate. The setup QR carries that origin; manual
    entry takes the origin, not a path.
@@ -143,10 +152,16 @@ UTF-8 version 2 login text defined in the shared contract, binding challenge ID,
 nonce, phone ID, expiry, username, service name and pending-session identifier.
 The prefix is `NEARKEY-LOGIN-V2`; enrollment retains `NEARKEY-ENROLL-V1`.
 Proof exists before the final write ACK. GATT reads return the remaining proof at each offset, including an empty terminal
-read. Android's ATT stack clips packets to the actual negotiated MTU, avoiding a stale app-side MTU on reused links; the server stays open while a central reads after advertising stops.
-Only one central is accepted. Disconnect clears buffers/proof and readvertises
-only before the original deadline. Cancel, expiry, channel loss, local reset and
-leaving foreground close GATT/advertising and discard the pending challenge.
+read. Android's ATT stack clips packets to the actual negotiated MTU, avoiding a stale app-side MTU on reused links.
+The foreground app keeps one GATT service and advertisement available between
+logins so Android does not replace the private BLE address remembered by the
+browser. Idle advertising cannot sign. Only one central is accepted. Disconnect
+clears buffers/proof. Cancel, expiry and channel loss immediately discard the
+pending signing challenge and its proof; each new challenge retains its own
+original wall-clock and monotonic deadline. Repeated readiness requests do not
+extend that deadline. Losing every website connection, local reset or leaving
+foreground closes GATT/advertising. A new browser page still needs explicit phone
+selection when its browser does not support the permitted-device API.
 
 Reconnect uses bounded exponential delay while foreground and accepts only live
 challenges resent by the authenticated server. Old socket and HTTP callbacks

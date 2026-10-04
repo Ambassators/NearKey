@@ -1,6 +1,7 @@
 package dev.nearkey.passive
 
 import android.os.Handler
+import android.content.Context
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -8,6 +9,7 @@ import org.json.JSONObject
 
 /** One authenticated channel per enrolled origin, with independent reconnect state. */
 class WebsiteConnection(
+    context: Context,
     val website: ConnectedWebsite,
     private val handler: Handler,
     private val key: SigningKey,
@@ -16,7 +18,7 @@ class WebsiteConnection(
     private val challengeCancelled: (WebsiteConnection, String) -> Unit,
     private val lost: (WebsiteConnection) -> Unit
 ) {
-    val api = PhoneApi()
+    val api = PhoneApi(context)
     var online = false
         private set
     var status = "Connecting…"
@@ -94,6 +96,10 @@ class WebsiteConnection(
         } catch (e: Exception) {
             status = e.message ?: "Cannot connect"
             changed()
+            if (foreground && e.message == LocalNetwork.WIFI_REQUIRED) {
+                handler.postDelayed(reconnect, delay)
+                delay = (delay * 2).coerceAtMost(15_000)
+            }
         }
     }
 

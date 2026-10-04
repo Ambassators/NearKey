@@ -114,11 +114,11 @@ export class PhoneBluetooth {
   async remembered(token) {
     if (this.device && this.device.id === this.deviceId) return this.device;
     if (!this.bluetooth?.getDevices) {
-      throw new Error('This browser cannot reconnect saved devices automatically. Click Choose / reconnect phone.');
+      throw new Error('Click “Reconnect phone” and select your phone to continue.');
     }
     const devices = await this.step(token, () => this.bluetooth.getDevices());
     const device = devices.find(d => d.id === this.deviceId);
-    if (!device) throw new Error('No remembered permitted phone is available. Click Choose / reconnect phone.');
+    if (!device) throw new Error('Select your phone again. Click “Reconnect phone” to continue.');
     return device;
   }
 
@@ -138,7 +138,7 @@ export class PhoneBluetooth {
     signal?.addEventListener('abort', cancel, {once: true});
     const timer = setTimeout(() => this.abort(token, Date.now() >= token.expiresAt
       ? 'Challenge expired before the phone proof arrived.'
-      : 'Bluetooth connection timed out. Choose / reconnect phone to retry.'),
+      : 'Phone connection timed out. Click “Reconnect phone” to try again.'),
       Math.min(this.timeoutMs, token.expiresAt - Date.now()));
     const disconnected = () => this.abort(token, 'Phone disconnected. Reconnect to retry this pending challenge.');
     try {

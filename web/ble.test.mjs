@@ -36,7 +36,7 @@ test('changing the enrolled phone discards the old Bluetooth choice and requires
   assert.equal(transport.device, null);
   assert.equal(transport.deviceId, null);
   assert.equal(remembered.getItem('nearkey.bluetoothDeviceId'), undefined);
-  await assert.rejects(transport.remembered({controller: new AbortController(), pending: new Set()}), /No remembered/);
+  await assert.rejects(transport.remembered({controller: new AbortController(), pending: new Set()}), /Select your phone again/);
 });
 function phone(c, options = {}) {
   const device = new EventTarget();
@@ -161,7 +161,7 @@ for (const [name, getDevices] of [['getDevices unavailable', undefined], ['remem
     const bluetooth = new PhoneBluetooth({secure: true, storage: storage('old-phone'), bluetooth: {
       requestDevice: () => { choices++; }, getDevices,
     }});
-    await assert.rejects(bluetooth.prove(challenge()), /Choose \/ reconnect phone/);
+    await assert.rejects(bluetooth.prove(challenge()), /Reconnect phone/);
     assert.equal(choices, 0);
   });
 }
