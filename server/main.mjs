@@ -13,7 +13,7 @@ const phoneOrigin = process.env.PHONE_ORIGIN || (wifi ? `http://${wifiAddress()}
 const app = await createApp({
   publicOrigin, phoneOrigin, pairingFile,
   demoPhoneSetup: process.env.DEMO_PHONE_SETUP !== 'false',
-  username: process.env.DEMO_USERNAME || 'admin',
+  username: process.env.DEMO_USERNAME || 'demo',
   password: process.env.DEMO_PASSWORD || 'mint-river-otter-47',
 });
 app.server.on('error', (error) => {

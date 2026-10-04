@@ -178,7 +178,7 @@ async function staticFiles(root) {
   return files;
 }
 
-export async function createApp({publicOrigin = 'http://localhost:5173', phoneOrigin = publicOrigin, username = 'admin',
+export async function createApp({publicOrigin = 'http://localhost:5173', phoneOrigin = publicOrigin, username = 'demo',
   password = 'mint-river-otter-47', now = Date.now, root = ROOT, pairingFile = null, stateStore = null, channelPollMs = 2000, demoPhoneSetup = false} = {}) {
   if (stateStore && pairingFile) throw new Error('Choose shared storage or a local pairing file');
   validateOrigin(publicOrigin);

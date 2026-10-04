@@ -223,7 +223,7 @@ test('invalid or mismatched saved pairing fails startup instead of reopening enr
     await assert.rejects(createApp({username: 'demo', pairingFile: file}), /Saved phone pairing is invalid/);
   }
   await writeFile(file, original);
-  await assert.rejects(createApp({pairingFile: file}), /Saved phone pairing is invalid/);
+  await assert.rejects(createApp({username: 'different-user', pairingFile: file}), /Saved phone pairing is invalid/);
   await assert.rejects(createApp({username: 'demo', publicOrigin: 'http://localhost:9999', pairingFile: file}),
     /Saved phone pairing is invalid/);
 });
@@ -351,16 +351,16 @@ test('wire texts, real DER signatures and canonical SPKI enforce the shared cont
   assert.throws(() => parseSignature(Buffer.from([0x30, 7, 2, 2, 0, 1, 2, 1, 1]).toString('base64url')));
 });
 
-test('default admin credentials open only a pending login', async (t) => {
+test('default demo credentials open only a pending login', async (t) => {
   const f = await fixture(t, {username: undefined, password: undefined});
-  const login = await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'mint-river-otter-47'}});
+  const login = await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'mint-river-otter-47'}});
   assert.equal(login.status, 200);
   assert.equal(login.data.authenticated, false);
   assert.equal(login.data.pending, true);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await f.request('/api/account', {cookie})).status, 403);
-  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'password'}})).status, 401);
-  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'password1'}})).status, 401);
+  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'password'}})).status, 401);
+  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'password1'}})).status, 401);
   assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}})).status, 401);
 });
 
