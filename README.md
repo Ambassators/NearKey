@@ -1,3 +1,5 @@
+> **Earlier commit history:** [View the commit logs in the original repository](https://github.com/Quinntyx/nearkey/commits).
+
 # NearKey — Bluetooth 2FA provider
 
 NearKey is a two-factor authentication provider demo. Its setup wizard guides you through password sign-in, Android phone enrollment and Bluetooth verification. The dashboard then shows your saved app list.
