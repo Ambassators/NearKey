@@ -4,7 +4,17 @@ import {ChallengeFlow} from './challenge.mjs';
 import {EnrollmentQr} from './enrollment.mjs';
 
 const $ = id => document.getElementById(id);
-const bluetooth = new PhoneBluetooth();
+const diagnostics = {transport: 'Idle', observed: new Map(), challenge: null, startedAt: null, endedAt: null};
+const bluetooth = new PhoneBluetooth({onProgress: stage => {
+  diagnostics.transport = stage;
+  renderDebug();
+}});
+let keyToss = null;
+// An optional animation must not prevent sign-in when its assets are unavailable.
+void import('./key-toss.mjs').then(({KeyToss}) => {
+  keyToss = new KeyToss($('key-toss'));
+  renderControls();
+}).catch(() => {});
 const enrollmentQr = new EnrollmentQr({container: $('pair-qr'), message: $('pair-instruction'),
   codeInput: $('pair-code'), originInput: $('base-url'), manual: $('pair-manual')});
 let session = null;
@@ -51,6 +61,68 @@ const flow = new ChallengeFlow({api, bluetooth, onChange: state => {
 function notice(message = '') {
   $('notice').textContent = message;
   $('notice').hidden = !message;
+  if (message) observeDebug('notice', message);
+}
+
+// Only display status text: never serialize requests, credentials, keys or proofs.
+function debugEvent(message) {
+  const list = $('debug-events');
+  if (!list) return;
+  if (!diagnostics.observed.size && list.children.length === 1) list.replaceChildren();
+  const item = document.createElement('li');
+  const time = document.createElement('span');
+  time.className = 'debug-event-time';
+  time.textContent = new Date().toLocaleTimeString([], {hour12: false});
+  const text = document.createElement('span');
+  text.textContent = String(message).replace(/https?:\/\/\S+/g, '[URL]').replace(/[A-Za-z0-9_-]{40,}/g, '[redacted]').slice(0, 300);
+  item.append(time, text);
+  list.prepend(item);
+  while (list.children.length > 20) list.lastElementChild.remove();
+}
+
+function observeDebug(key, value, message = value) {
+  if (diagnostics.observed.get(key) === value) return;
+  debugEvent(message);
+  diagnostics.observed.set(key, value);
+}
+
+function renderDebug() {
+  if (!$('debug-session')) return;
+  const state = flow.state;
+  const phone = account?.phone || session?.setup?.phone;
+  const sessionStatus = account ? 'Both factors verified' : session?.pending ? 'Password accepted · 2FA pending'
+    : loginBusy ? 'Checking session' : 'Password required';
+  const phoneStatus = phone ? `${phone.label || 'Enrolled phone'} · ${phone.online ? 'server online' : 'server offline'}` : 'Not enrolled in this session';
+  $('debug-session').textContent = sessionStatus;
+  $('debug-phone').textContent = phoneStatus;
+  observeDebug('session', sessionStatus, `Session: ${sessionStatus}`);
+  observeDebug('phone', phoneStatus, `Phone: ${phoneStatus}`);
+  const problem = bluetooth.availability();
+  $('debug-bluetooth').textContent = problem ? 'Unavailable in this browser'
+    : bluetooth.device?.gatt?.connected ? 'Phone link connected'
+    : bluetooth.busy ? 'Browser operation in progress'
+    : bluetooth.deviceId ? 'Phone permitted · link disconnected' : 'No phone permission yet';
+  let stage = challengeBusy ? 'Requesting login challenge' : pairing ? 'Waiting for QR enrollment'
+    : chooserBusy ? diagnostics.transport === 'Idle' ? 'Choosing phone' : diagnostics.transport : state ? {
+      waiting: state.phoneReady ? 'Phone advertising' : 'Waiting for phone advertisement',
+      connecting: diagnostics.transport === 'Idle' ? 'Starting Bluetooth' : diagnostics.transport,
+      submitting: 'Server verifying signature',
+      reconnect: 'Reconnect needed', approved: 'Login verified', expired: 'Challenge expired',
+      cancelled: 'Verification cancelled', failed: 'Verification failed',
+    }[state.phase] : 'Ready';
+  $('debug-stage').textContent = stage || 'Ready';
+  observeDebug('stage', stage, `Stage: ${stage}`);
+  if (state && diagnostics.challenge !== state.challenge.id) {
+    diagnostics.challenge = state.challenge.id;
+    diagnostics.startedAt = performance.now();
+    diagnostics.endedAt = null;
+    debugEvent('Observing login challenge · original deadline retained');
+  }
+  if (state && !flow.run && diagnostics.endedAt === null) diagnostics.endedAt = performance.now();
+  const elapsed = diagnostics.startedAt === null ? 0 : ((diagnostics.endedAt ?? performance.now()) - diagnostics.startedAt) / 1000;
+  $('debug-elapsed').textContent = `${elapsed.toFixed(1)}s`;
+  $('debug-deadline').textContent = state && flow.run ? `${Math.max(0, (state.challenge.expiresAt - Date.now()) / 1000).toFixed(1)}s` : '—';
+  if (state?.message) observeDebug('flow-message', state.message);
 }
 
 function resetLifetime() {
@@ -67,6 +139,8 @@ function resetLifetime() {
   autoAttempted = openingDashboard = false;
   activityKey = '';
   currentVerification = null;
+  diagnostics.challenge = diagnostics.startedAt = diagnostics.endedAt = null;
+  diagnostics.transport = 'Idle';
 }
 
 function signOutLocally() {
@@ -103,6 +177,8 @@ function renderControls() {
   $('password').disabled = loginBusy;
   $('setup-panel').hidden = !!state;
   $('challenge-panel').hidden = !state;
+  // The key-toss scene loops while the phone is signing, settles unlocked on approval, and rests otherwise.
+  keyToss?.sync(!state ? 'rest' : state.phase === 'approved' ? 'finish' : running && state.phase !== 'reconnect' ? 'loop' : 'rest');
   $('enrollment').hidden = !!phone;
   $('bluetooth-setup').hidden = !phone;
   $('pairing').hidden = !pairing || !!phone;
@@ -121,6 +197,7 @@ function renderControls() {
   $('back-button').disabled = loginBusy;
   $('bluetooth-problem').hidden = !problem;
   $('bluetooth-problem').textContent = problem || '';
+  renderDebug();
 }
 
 function renderSession() {

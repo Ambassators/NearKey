@@ -58,6 +58,10 @@ QR encoding runs locally in the browser using the vendored `qrcode-generator`
 2.0.4 module; its MIT license is in `web/qrcode-generator-LICENSE.txt`. No external
 QR service receives the pairing code.
 
+The verification screen's key-toss loading animation uses the vendored
+[anime.js](https://animejs.com) 4.5.0 ESM bundle (`web/anime.mjs`); its MIT
+license is in `web/anime-LICENSE.txt`. No animation assets load from a CDN.
+
 ## Checks
 
 ```sh

@@ -125,7 +125,8 @@ test('remembered permitted device automatically connects, writes with response t
   const c = challenge();
   const mock = phone(c);
   let chooserCalls = 0;
-  const bluetooth = new PhoneBluetooth({secure: true, storage: storage(mock.device.id), bluetooth: {
+  const progress = [];
+  const bluetooth = new PhoneBluetooth({secure: true, storage: storage(mock.device.id), onProgress: stage => progress.push(stage), bluetooth: {
     requestDevice: () => { chooserCalls++; }, getDevices: async () => [mock.device],
   }});
   assert.equal(await bluetooth.prove(c), mock.signature);
@@ -133,6 +134,11 @@ test('remembered permitted device automatically connects, writes with response t
   assert.equal(Buffer.concat(mock.writes).toString(), `${JSON.stringify(bleRequest(c))}\n`);
   assert.ok(mock.calls.findIndex(call => call[0] === 'read') > mock.calls.findLastIndex(call => call[0] === 'write'));
   assert.equal(mock.device.gatt.connected, false);
+  assert.ok(progress.includes('Reading phone signature'));
+  assert.equal(progress.at(-1), 'Phone signature received');
+  for (const secret of [c.id, c.nonce, mock.signature, mock.device.id]) {
+    assert.ok(!progress.join(' ').includes(secret), 'diagnostics must not expose protocol or device identifiers');
+  }
 });
 
 for (const [name, getDevices] of [['getDevices unavailable', undefined], ['remembered permission missing', async () => []]]) {
@@ -150,10 +156,14 @@ test('connection failure releases controls and permits retry of the same pending
   const c = challenge();
   let attempt = 0;
   const mock = phone(c, {connect: async () => { if (++attempt === 1) throw new Error('out of range'); }});
-  const bluetooth = new PhoneBluetooth({secure: true, storage: storage(mock.device.id), bluetooth: {
+  const progress = [];
+  const bluetooth = new PhoneBluetooth({secure: true, storage: storage(mock.device.id), onProgress: stage => progress.push(stage), bluetooth: {
     requestDevice: async () => mock.device, getDevices: async () => [mock.device],
   }});
   await assert.rejects(bluetooth.prove(c), /out of range/);
+  assert.ok(progress.includes('Connecting Bluetooth'));
+  assert.ok(!progress.includes('Sending login challenge'), 'failed connection must not claim that a challenge was sent');
+  assert.equal(progress.at(-1), 'Bluetooth attempt interrupted');
   await tick();
   assert.equal(bluetooth.busy, false);
   assert.equal(await bluetooth.prove(c), mock.signature);

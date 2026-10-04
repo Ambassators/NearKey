@@ -29,33 +29,32 @@
     <main>
       <p id="notice" class="notice" role="status" hidden></p>
       <section id="login-view" class="login-layout" aria-label="Sign in to Nearkey">
-        <div class="intro">
-          <p class="eyebrow"><span class="tiny-line"></span> YOUR SECOND FACTOR, REIMAGINED</p>
-          <h1>Good security.<br><span>Within reach.</span></h1>
-          <p class="intro-copy">Your phone is your second factor. Sign in, keep it nearby, and let Bluetooth do the verification.</p>
-          <div class="proximity-art" aria-hidden="true">
-            <div class="orbit orbit-outer"></div>
-            <div class="orbit orbit-middle"></div>
-            <div class="orbit orbit-inner"></div>
-            <span class="orbit-point point-one"></span>
-            <span class="orbit-point point-two"></span>
-            <div class="phone-illustration">
-              <div class="phone-camera"></div>
-              <span class="phone-brand">n</span>
-              <div class="phone-check">
-                <svg><use href="#icon-shield"/></svg>
-              </div>
-              <span class="phone-caption">YOU'RE THE KEY</span>
-              <div class="phone-home"></div>
-            </div>
-            <span class="art-chip bluetooth-chip"><svg><use href="#icon-bluetooth"/></svg> Nearby by design</span>
-            <span class="art-chip proof-chip"><span class="status-dot"></span> Signed on your phone</span>
+        <section class="intro connection-debug" aria-labelledby="debug-title">
+          <div class="debug-topline">
+            <p class="eyebrow">NEARKEY / CONNECTION MONITOR</p>
+            <span class="debug-live"><span class="status-dot" aria-hidden="true"></span>LIVE</span>
           </div>
-          <div class="intro-foot">
-            <svg><use href="#icon-key"/></svg>
-            <span>A phone-held key. No code to copy.</span>
+          <h1 id="debug-title">Live connection debug</h1>
+          <p class="debug-copy">Follow each step from password acceptance to your phone’s Bluetooth proof.</p>
+          <dl class="debug-status">
+            <div><dt>Session</dt><dd id="debug-session">Checking session…</dd></div>
+            <div><dt>Phone</dt><dd id="debug-phone">Checking phone…</dd></div>
+            <div><dt>Bluetooth</dt><dd id="debug-bluetooth">Checking browser…</dd></div>
+            <div><dt>Stage</dt><dd id="debug-stage">Starting diagnostics…</dd></div>
+          </dl>
+          <dl class="debug-timing">
+            <div><dt>Elapsed</dt><dd id="debug-elapsed">0.0s</dd></div>
+            <div><dt>Time remaining</dt><dd id="debug-deadline">—</dd></div>
+          </dl>
+          <div class="debug-log-heading">
+            <h2 id="debug-events-title">Connection events</h2>
+            <span>RECENT ACTIVITY</span>
           </div>
-        </div>
+          <ol id="debug-events" class="debug-events" aria-labelledby="debug-events-title" role="log" aria-live="polite" aria-relevant="additions">
+            <li><span class="debug-event-time">—</span><span>Waiting for connection updates.</span></li>
+          </ol>
+          <p class="debug-foot">Keep the Android app open while verifying your nearby phone.</p>
+        </section>
         <div class="login-side">
           <div class="login-topline">
             <span>NEARKEY / SECURE SIGN IN</span>
@@ -130,9 +129,33 @@
                 </div>
               </div>
               <section id="challenge-panel" aria-labelledby="challenge-title" hidden>
-                <div class="challenge-orb">
-                  <svg><use href="#icon-bluetooth"/></svg>
-                  <span class="orb-ring"></span>
+                <div id="key-toss" class="key-toss" data-mode="rest" aria-hidden="true">
+                  <svg class="key-toss-art" viewBox="0 -6 340 112" xmlns="http://www.w3.org/2000/svg">
+                    <path class="kt-flight" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
+                    <path class="kt-arc" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
+                    <path class="kt-trail" d="M44 60C110 -10 214 -10 280 60" fill="none"/>
+                    <g class="kt-phone">
+                      <rect x="24" y="26" width="40" height="74" rx="8"/>
+                      <rect class="kt-phone-screen" x="29" y="34" width="30" height="54" rx="3"/>
+                      <path d="M39 30h10M39 95h10"/>
+                    </g>
+                    <g class="kt-laptop">
+                      <rect x="240" y="26" width="80" height="56" rx="6"/>
+                      <rect class="kt-screen" x="245" y="31" width="70" height="46" rx="3"/>
+                      <rect class="kt-base" x="228" y="86" width="104" height="5" rx="2.5"/>
+                      <path class="kt-shackle" d="M274 54v-5a6 6 0 0 1 12 0v5"/>
+                      <rect class="kt-lock-body" x="270" y="54" width="20" height="15" rx="3"/>
+                      <path class="kt-keyhole" d="M280 59.5v4"/>
+                    </g>
+                    <g class="kt-key">
+                      <g class="kt-key-inner">
+                        <g transform="rotate(-45) translate(-12 -12)">
+                          <circle cx="8" cy="9" r="5"/>
+                          <path d="m12 13 8 8m-4-4 3-3m-6 0 3-3"/>
+                        </g>
+                      </g>
+                    </g>
+                  </svg>
                 </div>
                 <div class="section-top">
                   <p class="eyebrow">NEARBY VERIFICATION</p>

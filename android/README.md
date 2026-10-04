@@ -87,7 +87,11 @@ server origin and code; review them and tap **Enroll phone** to submit enrollmen
 3. Keep the phone app visible. Bluetooth must already be enabled. Tap
    **Advertise setup for 60 seconds**, granting Nearby devices permissions if
    prompted, then explicitly click the browser's first-time Bluetooth chooser.
-   Setup mode advertises only the service UUID and **cannot sign**.
+   Setup mode advertises the service UUID plus the phone's configured Bluetooth
+   name in a separate scan response, so the browser chooser shows a recognizable
+   phone instead of “Unknown or Unsupported Device.” It **cannot sign**.
+   Device names must fit the 29-byte UTF-8 name field; the app shows a specific
+   error if the name is empty or too long. It never changes the phone's name.
 4. Continue login verification in the browser. Only an authenticated phone-channel
    login challenge enables signing. The app displays the service, account and countdown,
    advertises for the remaining server deadline, and POSTs readiness only after

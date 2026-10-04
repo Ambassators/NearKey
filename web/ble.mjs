@@ -64,11 +64,12 @@ export function parseProof(value, challengeId) {
 export class PhoneBluetooth {
   constructor({bluetooth = globalThis.navigator?.bluetooth,
     secure = globalThis.isSecureContext, storage,
-    timeoutMs = 12_000} = {}) {
+    timeoutMs = 12_000, onProgress = () => {}} = {}) {
     this.bluetooth = bluetooth;
     this.secure = secure;
     try { this.storage = storage === undefined ? globalThis.localStorage : storage; } catch { this.storage = null; }
     this.timeoutMs = timeoutMs;
+    this.onProgress = onProgress;
     this.device = null;
     this.active = null;
     try { this.deviceId = this.storage?.getItem(DEVICE_KEY) || null; } catch { this.deviceId = null; }
@@ -91,16 +92,22 @@ export class PhoneBluetooth {
     this.active = token;
     let selection;
     try {
+      this.onProgress('Choosing phone');
       selection = this.bluetooth.requestDevice({filters: [{services: [BLE_SERVICE_UUID]}]});
     } catch (error) {
       this.active = null;
+      this.onProgress('Phone selection interrupted');
       return Promise.reject(error);
     }
     return this.step(token, selection).then(device => {
       this.device = device;
       this.deviceId = device.id;
       try { this.storage?.setItem(DEVICE_KEY, device.id); } catch { /* permission works for this page */ }
+      this.onProgress('Bluetooth permission granted');
       return device;
+    }).catch(error => {
+      this.onProgress('Phone selection interrupted');
+      throw error;
     }).finally(() => this.release(token));
   }
 
@@ -135,26 +142,36 @@ export class PhoneBluetooth {
       Math.min(this.timeoutMs, token.expiresAt - Date.now()));
     const disconnected = () => this.abort(token, 'Phone disconnected. Reconnect to retry this pending challenge.');
     try {
+      this.onProgress('Finding permitted phone');
       const device = await this.remembered(token);
       token.device = device;
       device.addEventListener('gattserverdisconnected', disconnected);
       // Late native connect results are disconnected too; never leak a cancelled connection.
+      this.onProgress('Connecting Bluetooth');
       const server = await this.step(token, () => device.gatt.connect().then(server => {
         if (token.controller.signal.aborted) device.gatt.disconnect();
         return server;
       }));
+      this.onProgress('Discovering phone service');
       const service = await this.step(token, () => server.getPrimaryService(BLE_SERVICE_UUID));
       const request = await this.step(token, () => service.getCharacteristic(BLE_REQUEST_UUID));
       const proof = await this.step(token, () => service.getCharacteristic(BLE_PROOF_UUID));
+      this.onProgress('Sending login challenge');
       for (const chunk of chunks) {
         await this.step(token, () => request.writeValueWithResponse(chunk));
       }
       // Android stores the full proof before acknowledging the final newline write.
       // readValue uses GATT long reads; do not slice the returned DataView to 20 bytes.
+      this.onProgress('Reading phone signature');
       const value = await this.step(token, () => proof.readValue());
       if (token.controller.signal.aborted) throw token.controller.signal.reason;
       if (Date.now() >= challenge.expiresAt) throw new Error('Challenge expired before the phone proof arrived.');
-      return parseProof(value, challenge.id);
+      const signature = parseProof(value, challenge.id);
+      this.onProgress('Phone signature received');
+      return signature;
+    } catch (error) {
+      this.onProgress(token.controller.signal.aborted ? 'Bluetooth attempt stopped' : 'Bluetooth attempt interrupted');
+      throw error;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);

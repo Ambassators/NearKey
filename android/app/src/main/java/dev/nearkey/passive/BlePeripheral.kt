@@ -71,6 +71,12 @@ class BlePeripheral(
         if (!live() || peer != null || advertisement != null) return
         try {
             val bleAdvertiser = advertiser ?: error("BLE advertiser unavailable")
+            val deviceName = context.getSystemService(BluetoothManager::class.java)?.adapter?.name
+            check(!deviceName.isNullOrBlank()) { "Set a Bluetooth device name in phone settings, then retry." }
+            // A legacy scan response has 31 bytes, including the name field's two-byte header.
+            check(deviceName.toByteArray(Charsets.UTF_8).size <= 29) {
+                "Shorten the Bluetooth device name in phone settings (maximum 29 UTF-8 bytes), then retry."
+            }
             val cb = object : AdvertiseCallback() {
                 override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
                     handler.post {
@@ -87,7 +93,11 @@ class BlePeripheral(
                 }
                 override fun onStartFailure(errorCode: Int) {
                     handler.post {
-                        if (advertisement === this && active) fail("BLE advertising failed (code $errorCode)")
+                        if (advertisement === this && active) fail(
+                            if (errorCode == ADVERTISE_FAILED_DATA_TOO_LARGE)
+                                "Bluetooth device name is too long. Shorten it in phone settings, then retry."
+                            else "BLE advertising failed (code $errorCode)"
+                        )
                     }
                 }
             }
@@ -96,10 +106,14 @@ class BlePeripheral(
             val settings = AdvertiseSettings.Builder().setConnectable(true)
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).setTimeout(remaining).build()
-            // Service UUID only: no name, operation, phone/key identifier, nonce or token.
+            // Keep the service UUID in the primary packet so browser service filters still match.
             val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(UUID.fromString(Protocol.SERVICE)))
                 .setIncludeDeviceName(false).setIncludeTxPowerLevel(false).build()
-            bleAdvertiser.startAdvertising(settings, data, cb)
+            // The separate name packet gives Chrome's chooser a recognizable phone label.
+            // Neither packet contains login details, key identifiers, nonces or credentials.
+            val scanResponse = AdvertiseData.Builder()
+                .setIncludeDeviceName(true).setIncludeTxPowerLevel(false).build()
+            bleAdvertiser.startAdvertising(settings, data, scanResponse, cb)
         } catch (e: Exception) { fail(e.message ?: "Cannot advertise") }
     }
 
