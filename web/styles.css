@@ -236,6 +236,9 @@ input[readonly] { background: #f7f9f5; }
 .signin-divider { display: flex; align-items: center; gap: 16px; margin: 24px 0; color: var(--muted); font-size: 12px; }
 .signin-divider::before, .signin-divider::after { content: ''; height: 1px; flex: 1; background: var(--line); }
 .social-signin { display: grid; gap: 10px; }
+.android-download { width: min(100%, 520px); margin: 0 auto; padding: 20px 24px 28px; border-top: 1px solid var(--line); text-align: center; }
+.android-download a { display: inline-flex; align-items: center; gap: 12px; color: var(--ink); font-size: 14px; font-weight: 600; text-underline-offset: 4px; }
+.android-download p { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .social-button {
   display: grid;
   grid-template-columns: 20px 1fr 20px;

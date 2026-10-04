@@ -135,6 +135,14 @@ function readJson(req) {
 // Files are explicitly inventoried at startup: no arbitrary filesystem paths or symlinks.
 async function staticFiles(root) {
   const files = new Map([['/shared/protocol.mjs', {file: path.join(ROOT, 'shared/protocol.mjs'), type: 'text/javascript'}]]);
+  const apk = path.join(root, 'public/downloads/nearkey.apk');
+  try {
+    if ((await lstat(path.join(root, 'public'))).isDirectory()
+        && (await lstat(path.dirname(apk))).isDirectory()
+        && (await lstat(apk)).isFile()) files.set('/downloads/nearkey.apk', {
+      file: apk, type: 'application/vnd.android.package-archive', download: 'nearkey.apk',
+    });
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const types = {'.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript',
     '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon'};
   const web = path.join(root, 'web');
@@ -406,7 +414,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
         const asset = assets.get(route);
         let data;
         try { data = await readFile(asset.file); } catch { fail(404, 'not_found', 'Asset not found'); }
-        res.writeHead(200, {'Content-Type': asset.type.startsWith('font/') ? asset.type : `${asset.type}; charset=utf-8`,
+        res.writeHead(200, {'Content-Type': asset.download || asset.type.startsWith('font/') ? asset.type : `${asset.type}; charset=utf-8`,
+          ...(asset.download ? {'Content-Disposition': `attachment; filename="${asset.download}"`} : {}),
           'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin',
           'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});

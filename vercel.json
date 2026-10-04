@@ -8,7 +8,7 @@
   "functions": {
     "api/index.mjs": {
       "maxDuration": 300,
-      "includeFiles": "{web,shared}/**"
+      "includeFiles": "{web,shared,public/downloads}/**"
     }
   },
   "rewrites": [{"source": "/(.*)", "destination": "/api/index"}]

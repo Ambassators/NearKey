@@ -950,6 +950,10 @@ window.addEventListener('pageshow', event => {
 window.addEventListener('hashchange', () => renderControls());
 
 async function boot() {
+  // Direct visits use the same explicit home route as the brand link.
+  if (!location.hash || location.hash === '#') {
+    history.replaceState(null, '', `${location.pathname}${location.search}#/`);
+  }
   loginBusy = true;
   renderControls();
   const currentEpoch = epoch;

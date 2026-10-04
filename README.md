@@ -59,6 +59,19 @@ and apps survive deployments; local mode still resets them on restart.
 
 ## Build the phone app
 
+The signed Android release is available from **Download the Android app** at the
+bottom of the website, and at `/downloads/nearkey.apk`. It supports Android 8.0
+and later and requires HTTPS for phone connections. Android may ask you to allow
+installation from your browser. If a debug build is already installed, uninstall
+it first because its signing certificate differs; then enroll the phone again.
+
+To rebuild and replace the download, set `ANDROID_HOME` to your SDK and run
+`./android/tools/release.sh` with JDK 17. The script aligns, signs and verifies the
+release before writing `public/downloads/nearkey.apk`. Signing material is stored
+outside the repository in `~/.local/share/nearkey/signing/` (`release.jks` and
+`store-password`); `NEARKEY_SIGNING_DIR` can select another directory. Back up
+both files privately and reuse this key for future updates. Never commit them.
+
 The native iPhone app is in [ios/](ios/README.md). It uses the iPhone Secure
 Enclave and the same v2 Bluetooth protocol. See its setup guide, or run
 `./ios/tools/install.sh` with one unlocked iPhone connected after configuring

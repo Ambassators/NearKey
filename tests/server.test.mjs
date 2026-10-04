@@ -1032,6 +1032,21 @@ test('serves explicit web inventory and shared module, not traversal, source fil
 });
 
 
+test('serves the Android download before sign-in with APK headers and no extra files', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'nearkey-download-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  await mkdir(path.join(root, 'public/downloads'), {recursive: true});
+  await writeFile(path.join(root, 'public/downloads/nearkey.apk'), 'PK-test-apk');
+  await writeFile(path.join(root, 'public/downloads/private.jks'), 'private');
+  const f = await fixture(t, {root});
+  const result = await f.request('/downloads/nearkey.apk');
+  assert.equal(result.status, 200);
+  assert.equal(result.data, 'PK-test-apk');
+  assert.equal(result.headers.get('content-type'), 'application/vnd.android.package-archive');
+  assert.equal(result.headers.get('content-disposition'), 'attachment; filename="nearkey.apk"');
+  assert.equal((await f.request('/downloads/private.jks')).status, 404);
+});
+
 test('serves only the two bundled fonts through explicit same-origin asset routes', async (t) => {
   const f = await fixture(t);
   for (const name of ['dm-sans.ttf', 'manrope.ttf']) {

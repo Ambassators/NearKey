@@ -9,7 +9,7 @@ import {CONTRACT_VERSION} from '../shared/protocol.mjs';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function pairingPage(t, scene = null) {
+async function pairingPage(t, scene = null, initialHash = '#/loading') {
   const elements = new Map();
   const pageEvents = new Map();
   const timers = new Map();
@@ -55,8 +55,10 @@ async function pairingPage(t, scene = null) {
   }
   const context = vm.createContext({
     document, window: {addEventListener: (name, listener) => pageEvents.set(name, listener)},
-    location: {origin: 'http://localhost:5173', hash: '#/loading', pathname: '/', search: ''},
-    history: {replaceState() {}}, performance, AbortController,
+    location: {origin: 'http://localhost:5173', hash: initialHash, pathname: '/', search: ''},
+    history: {replaceState(_state, _title, url) {
+      context.location.hash = new URL(url, context.location.origin).hash;
+    }}, performance, AbortController,
     Date: class extends Date { static now() { return state.clock; } }, console,
     WebSocket: TestSocket,
     TestKeyToss: class { constructor() { return scene; } },
@@ -98,6 +100,15 @@ async function pairingPage(t, scene = null) {
     },
   };
 }
+
+test('direct visits select the home route before restoring the session', async t => {
+  for (const hash of ['', '#', '#/']) {
+    const page = await pairingPage(t, null, hash);
+    assert.equal(page.context.location.hash, '#/');
+    assert.equal(page.elements.get('home-view').hidden, false);
+    assert.equal(page.elements.get('signin-stage').hidden, true);
+  }
+});
 
 test('fake Google skips empty credentials and opens phone authentication, not the dashboard', async t => {
   const page = await pairingPage(t);
