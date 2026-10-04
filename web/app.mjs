@@ -1,13 +1,16 @@
 import {api} from './api.mjs';
 import {PhoneBluetooth} from './ble.mjs';
 import {ChallengeFlow} from './challenge.mjs';
+import {EnrollmentQr} from './enrollment.mjs';
 
 const $ = id => document.getElementById(id);
 const bluetooth = new PhoneBluetooth();
+const enrollmentQr = new EnrollmentQr({container: $('pair-qr'), message: $('pair-instruction'),
+  codeInput: $('pair-code'), originInput: $('base-url'), manual: $('pair-manual')});
 let session = null;
 let account = null;
 let pairing = null;
-let timer = null;
+let pollTimer = null;
 let lifetime = new AbortController();
 let epoch = 0;
 let loginBusy = false;
@@ -19,19 +22,32 @@ let activityKey = '';
 let openingDashboard = false;
 let currentVerification = null;
 const pendingStatuses = new Set(['waiting_phone', 'waiting_bluetooth']);
+const challengeTitles = {
+  waiting: 'Checking your phone key.',
+  connecting: 'Checking your phone key.',
+  submitting: 'Verifying your signature.',
+  reconnect: 'Let’s find your phone.',
+  approved: 'Your sign-in is verified.',
+  expired: 'Let’s try that again.',
+  cancelled: 'Verification stopped.',
+  failed: 'Verification interrupted.',
+};
 
 const flow = new ChallengeFlow({api, bluetooth, onChange: state => {
   renderChallenge(state);
   if (state?.phase === 'approved') {
     currentVerification = state.receipt?.verifiedAt || state.receipt?.createdAt || null;
     const currentEpoch = epoch;
-    void enterDashboard().catch(error => {if (epoch === currentEpoch) handleError(error);});
+    void enterDashboard().catch(error => {
+      if (epoch === currentEpoch) handleError(error);
+    });
   }
 }, onSessionLost: () => {
   signOutLocally();
   notice('Your sign-in session ended. Enter your password to start again.');
 }});
 
+// Session lifecycle and feedback.
 function notice(message = '') {
   $('notice').textContent = message;
   $('notice').hidden = !message;
@@ -41,10 +57,11 @@ function resetLifetime() {
   epoch++;
   lifetime.abort(new Error('Page session changed.'));
   lifetime = new AbortController();
-  clearTimeout(timer);
-  timer = null;
+  clearTimeout(pollTimer);
+  pollTimer = null;
   flow.dispose();
   pairing = null;
+  enrollmentQr.clear();
   session = account = null;
   pairBusy = challengeBusy = chooserBusy = false;
   autoAttempted = openingDashboard = false;
@@ -66,6 +83,7 @@ function handleError(error) {
   notice(error.message);
 }
 
+// Rendering keeps account access separate from pending phone setup.
 function renderControls() {
   const phone = session?.setup?.phone;
   const state = flow.state;
@@ -88,8 +106,9 @@ function renderControls() {
   $('enrollment').hidden = !!phone;
   $('bluetooth-setup').hidden = !phone;
   $('pairing').hidden = !pairing || !!phone;
+  enrollmentQr.render(pending && !phone ? pairing : null, location.origin);
   $('pair-button').disabled = pairBusy || !pending || !!phone;
-  $('pair-button').firstChild.textContent = pairBusy ? 'Creating enrollment code… ' : pairing ? 'Get a fresh code ' : 'Get enrollment code ';
+  $('pair-button').firstChild.textContent = pairBusy ? 'Creating setup QR code… ' : pairing ? 'Get a fresh QR code ' : 'Show setup QR code ';
   $('choose-button').disabled = chooserBusy || running || bluetooth.busy || !phone || !!problem;
   $('choose-button').firstChild.textContent = chooserBusy ? 'Opening Bluetooth chooser… ' : bluetooth.deviceId ? 'Choose / reconnect phone ' : 'Choose your phone ';
   $('verify-button').disabled = challengeBusy || chooserBusy || bluetooth.busy || !phone?.online || !!problem;
@@ -122,17 +141,12 @@ function renderSession() {
   $('permission-description').textContent = phone?.online
     ? 'Keep the Android app open. Your phone signs the login challenge without a code or confirmation tap.'
     : 'Open your enrolled Android app and connect it to Nearkey. To choose it in this browser, tap “Advertise setup for 60 seconds” on the phone first.';
-  if (pairing) {
-    $('pair-code').value = pairing.pairingCode;
-    $('base-url').value = location.origin;
-  }
-  renderControls();
   tick();
 }
 
 function dateLabel(value) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 'Verified in this session' : date.toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+  return Number.isNaN(date.getTime()) ? 'Verified in this session' : date.toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
 }
 
 function icon(symbol) {
@@ -142,6 +156,24 @@ function icon(symbol) {
   use.setAttribute('href', `#icon-${symbol}`);
   svg.append(use);
   return svg;
+}
+
+function activityItem(event) {
+  const item = document.createElement('li');
+  const symbol = document.createElement('span');
+  symbol.className = 'activity-icon';
+  symbol.append(icon('shield'));
+  const description = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = `${event.serviceName || 'Nearkey'} sign-in verified`;
+  const subtitle = document.createElement('small');
+  subtitle.textContent = `${dateLabel(event.verifiedAt || event.createdAt)} · ${event.phoneLabel || 'Enrolled phone'}`;
+  description.append(title, subtitle);
+  const proof = document.createElement('span');
+  proof.className = 'activity-proof';
+  proof.textContent = 'Bluetooth 2FA';
+  item.append(symbol, description, proof);
+  return item;
 }
 
 function renderAccount() {
@@ -155,43 +187,28 @@ function renderAccount() {
   const nextKey = JSON.stringify(activity);
   if (activityKey !== nextKey) {
     activityKey = nextKey;
-    $('activity-list').replaceChildren(...activity.slice(0, 4).map(event => {
-      const item = document.createElement('li');
-      const symbol = document.createElement('span');
-      symbol.className = 'activity-icon';
-      symbol.append(icon('shield'));
-      const description = document.createElement('div');
-      const title = document.createElement('strong');
-      title.textContent = `${event.serviceName || 'Nearkey'} sign-in verified`;
-      const subtitle = document.createElement('small');
-      subtitle.textContent = `${dateLabel(event.verifiedAt || event.createdAt)} · ${event.phoneLabel || 'Enrolled phone'}`;
-      description.append(title, subtitle);
-      const proof = document.createElement('span');
-      proof.className = 'activity-proof';
-      proof.textContent = 'Bluetooth 2FA';
-      item.append(symbol, description, proof);
-      return item;
-    }));
+    $('activity-list').replaceChildren(...activity.slice(0, 4).map(activityItem));
   }
   $('no-activity').hidden = activity.length > 0;
   renderControls();
 }
 
+// Server-backed dashboard access and status polling.
 async function enterDashboard() {
   if (openingDashboard || account) return;
   openingDashboard = true;
   const currentEpoch = epoch;
   try {
     // The server, not a successful password or browser permission, opens the workspace.
-    const result = await api('/api/account', {signal:lifetime.signal});
+    const result = await api('/api/account', {signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
     account = result;
-    session = {...session, authenticated:true, pending:false};
+    session = {...session, authenticated: true, pending: false};
     flow.dispose();
     $('password').value = '';
     notice();
     renderAccount();
-    $('dashboard-title').focus({preventScroll:true});
+    $('dashboard-title').focus({preventScroll: true});
     schedulePoll(currentEpoch);
   } finally {
     if (epoch === currentEpoch) openingDashboard = false;
@@ -199,20 +216,20 @@ async function enterDashboard() {
 }
 
 function schedulePoll(currentEpoch) {
-  clearTimeout(timer);
-  if (session?.pending || account) timer = setTimeout(() => void poll(currentEpoch), 3000);
+  clearTimeout(pollTimer);
+  if (session?.pending || account) pollTimer = setTimeout(() => void poll(currentEpoch), 3000);
 }
 
 async function poll(currentEpoch) {
   if (epoch !== currentEpoch || !session) return;
   try {
     if (account) {
-      const result = await api('/api/account', {signal:lifetime.signal});
+      const result = await api('/api/account', {signal: lifetime.signal});
       if (epoch !== currentEpoch) return;
       account = result;
       renderAccount();
     } else {
-      const result = await api('/api/session', {signal:lifetime.signal});
+      const result = await api('/api/session', {signal: lifetime.signal});
       if (epoch !== currentEpoch) return;
       if (result.authenticated) await enterDashboard();
       else if (!result.pending) return flow.onSessionLost();
@@ -233,13 +250,7 @@ async function poll(currentEpoch) {
 
 function renderChallenge(state) {
   if (!state) return renderControls();
-  const titles = {
-    waiting:'Checking your phone key.', connecting:'Checking your phone key.',
-    submitting:'Verifying your signature.', reconnect:'Let’s find your phone.',
-    approved:'Your sign-in is verified.', expired:'Let’s try that again.',
-    cancelled:'Verification stopped.', failed:'Verification interrupted.',
-  };
-  $('challenge-title').textContent = titles[state.phase] || 'Checking your phone key.';
+  $('challenge-title').textContent = challengeTitles[state.phase] || challengeTitles.waiting;
   $('challenge-message').textContent = state.message;
   $('challenge-service').textContent = state.challenge.serviceName;
   $('challenge-username').textContent = state.challenge.username;
@@ -247,7 +258,6 @@ function renderChallenge(state) {
     ? 'Your phone is advertising this sign-in challenge. Keep it nearby.'
     : 'Waiting for your phone app to advertise this sign-in challenge.'
     : state.phase === 'approved' ? 'Both factors accepted. Opening your workspace…' : 'Your workspace remains locked until a login signature is verified.';
-  renderControls();
   tick();
 }
 
@@ -260,11 +270,11 @@ function tick() {
   if (pairing) {
     const seconds = Math.max(0, Math.ceil((pairing.expiresAt - Date.now()) / 1000));
     $('pair-time').textContent = seconds ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s. This code enrolls your phone; it does not sign you in.` : 'Code expired. Get a fresh enrollment code to continue.';
-    if (!seconds) $('pair-code').value = '';
   }
   renderControls();
 }
 
+// Restore or create the password-accepted sign-in flow.
 async function acceptSession(result) {
   session = result;
   $('password').value = '';
@@ -292,7 +302,7 @@ async function startChallenge() {
   notice();
   renderControls();
   try {
-    const result = await api('/api/challenges', {method:'POST', body:{}, signal:lifetime.signal});
+    const result = await api('/api/challenges', {method: 'POST', body: {}, signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
     if (!pendingStatuses.has(result.status)) throw new Error('Nearkey returned an unexpected login challenge status.');
     flow.start(result.challenge);
@@ -304,6 +314,7 @@ async function startChallenge() {
   }
 }
 
+// User actions: Bluetooth selection stays inside a fresh click activation.
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (loginBusy || session?.pending || account) return;
@@ -312,10 +323,16 @@ $('login-form').addEventListener('submit', async event => {
   notice();
   renderControls();
   try {
-    const result = await api('/api/login', {method:'POST', body:{username:$('username').value, password:$('password').value}, signal:lifetime.signal});
+    const result = await api('/api/login', {
+      method: 'POST',
+      body: {username: $('username').value, password: $('password').value},
+      signal: lifetime.signal,
+    });
     if (epoch !== currentEpoch) return;
     await acceptSession(result);
-    if (epoch === currentEpoch && session?.pending) $(flow.state ? 'challenge-title' : 'factor-title').focus({preventScroll:true});
+    if (epoch === currentEpoch && session?.pending) {
+      $(flow.state ? 'challenge-title' : 'factor-title').focus({preventScroll: true});
+    }
   } catch (error) {
     if (epoch === currentEpoch) notice(error.message);
   } finally {
@@ -331,7 +348,7 @@ async function logout() {
   loginBusy = true;
   renderControls();
   try {
-    await api('/api/logout', {method:'POST', body:{}});
+    await api('/api/logout', {method: 'POST', body: {}});
     if (epoch === currentEpoch) notice('Signed out. Your next sign-in will verify both factors.');
   } catch (error) {
     if (epoch === currentEpoch) notice(`Server sign-out was not confirmed. ${error.message} Reload to check your session.`);
@@ -350,7 +367,7 @@ $('pair-button').addEventListener('click', async () => {
   notice();
   renderControls();
   try {
-    const result = await api('/api/pairing', {method:'POST', body:{}, signal:lifetime.signal});
+    const result = await api('/api/pairing', {method: 'POST', body: {}, signal: lifetime.signal});
     if (epoch !== currentEpoch || session?.setup?.phone) return;
     pairing = result;
     renderSession();
@@ -400,26 +417,34 @@ $('cancel-button').addEventListener('click', async () => {
   if (epoch !== currentEpoch) return;
   // Proof already sent can win a cancel race; reconcile against server authentication.
   try {
-    const result = await api('/api/session', {signal:lifetime.signal});
+    const result = await api('/api/session', {signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
     if (result.authenticated) await enterDashboard();
     else if (!result.pending) flow.onSessionLost();
-    else {session = result; renderSession();}
+    else {
+      session = result;
+      renderSession();
+    }
   } catch (error) {
     if (epoch === currentEpoch) handleError(error);
   }
 });
 
 const ticker = setInterval(tick, 250);
-window.addEventListener('pagehide', () => {resetLifetime(); clearInterval(ticker);});
-window.addEventListener('pageshow', event => {if (event.persisted) location.reload();});
+window.addEventListener('pagehide', () => {
+  resetLifetime();
+  clearInterval(ticker);
+});
+window.addEventListener('pageshow', event => {
+  if (event.persisted) location.reload();
+});
 
 async function boot() {
   loginBusy = true;
   renderControls();
   const currentEpoch = epoch;
   try {
-    const result = await api('/api/session', {signal:lifetime.signal});
+    const result = await api('/api/session', {signal: lifetime.signal});
     if (epoch === currentEpoch) await acceptSession(result);
   } catch (error) {
     if (epoch === currentEpoch) notice(error.message);

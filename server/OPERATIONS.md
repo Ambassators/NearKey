@@ -2,9 +2,9 @@
 
 Run Node 22+ with `npm ci`, then `npm start`. `npm test` discovers server and browser tests. Runtime dependency is `ws`.
 
-Defaults: `HOST=127.0.0.1`, `PORT=5173`, `PUBLIC_ORIGIN=http://localhost:5173`. Fixture credentials: `demo` / `demo-passive-key`; override `DEMO_USERNAME` and `DEMO_PASSWORD` for a deployment. A password match creates a ten-minute pending login. Only an enrolled phone's valid Bluetooth login proof promotes it to an eight-hour authenticated session. Protected account/dashboard data requires that completed second factor.
+Defaults: `HOST=127.0.0.1`, `PORT=5173`, `PUBLIC_ORIGIN=http://localhost:5173`. Fixture credentials: `demo` / `demo-passive-key`; override `DEMO_USERNAME` and `DEMO_PASSWORD` for a deployment. A password match creates a ten-minute pending login. Only an enrolled phone's valid Bluetooth login proof promotes it to an eight-hour authenticated session and refreshes the browser cookie for that lifetime. Protected account/dashboard data requires that completed second factor.
 
-For Android, use a trusted HTTPS endpoint reachable by both devices. Set `PUBLIC_ORIGIN` to that exact browser-facing origin and configure the app with the same origin. The reverse proxy must forward WebSocket upgrades and Authorization headers. The server does not trust forwarded headers, allow CORS or permit non-local HTTP browser origins. HTTP localhost supports local development, not the cross-device hardware gate.
+For Android, use a trusted HTTPS endpoint reachable by both devices. Set `PUBLIC_ORIGIN` to that exact browser-facing origin and configure the app with the same origin. The reverse proxy must forward WebSocket upgrades and Authorization headers. The server does not trust forwarded headers, allow CORS or permit non-local HTTP browser origins. For USB debug development, `adb reverse tcp:5173 tcp:5173` forwards the Android phone's localhost port to the Mac server. The debug app may use `http://localhost:5173` for HTTP/WS; Mac Chromium opens the same origin. This forwards the network channel only; Bluetooth proof still uses the physical radio. See the [Android USB workflow](../android/README.md#usb-debug-workflow).
 
 All data lives in memory. Restart resets sessions, verification activity, enrollment and phone credentials. Re-enrollment requires stopping the server offline, resetting the Android local credential/key, then restarting and pairing again. No password-only phone replacement/removal API exists. This reset is a demo lifecycle operation, not durable account recovery.
 
@@ -12,6 +12,6 @@ Bounds: 4 KiB JSON bodies, 8 KiB headers, five-second body timeout, 16 live sess
 
 Deadlines are absolute; readiness and reconnect never extend them. Session revocation, channel heartbeat failure and expiry cancel pending phone work. Signature verification and session promotion complete synchronously after body parsing, preventing concurrent duplicate completion. Version 2 signatures bind server-owned login context; enrollment remains version 1.
 
-Static resources are regular top-level web assets inventoried at startup, with no symlinks, subdirectories or arbitrary paths. `/` serves `web/index.html`; `/shared/protocol.mjs` is the only exposed shared resource. Restart after adding static assets.
+Static resources are regular top-level web assets inventoried at startup, plus the explicitly allowed bundled fonts `/web/fonts/dm-sans.ttf` and `/web/fonts/manrope.ttf`. Symlinks and arbitrary filesystem paths are not served. `/` serves `web/index.html`; `/shared/protocol.mjs` is the only exposed shared resource. Restart after adding static assets.
 
 Automated tests exercise real P-256 keys, DER SPKI/DER ECDSA, HTTP/WebSocket and pending-login security transitions. They do not exercise Bluetooth radio behavior. Mac Chromium ↔ foreground Android GATT/Keystore is a separate manual hardware gate. This prototype does not integrate external relying-party services or provide production account recovery.

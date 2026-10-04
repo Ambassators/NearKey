@@ -3,7 +3,6 @@ package dev.nearkey.passive
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -28,17 +27,7 @@ class PhoneApi {
     private var socket: WebSocket? = null
     private var closed = false
 
-    fun origin(value: String): HttpUrl {
-        val url = try { value.trim().toHttpUrl() } catch (_: IllegalArgumentException) {
-            throw IllegalArgumentException("Enter a valid HTTPS server origin; HTTP is supported only in debug builds")
-        }
-        require(url.isHttps || (BuildConfig.DEBUG && url.scheme == "http")) {
-            "HTTPS is required; cleartext HTTP is supported only in debug builds"
-        }
-        require(url.username.isEmpty() && url.password.isEmpty() && url.query == null &&
-            url.fragment == null && url.encodedPath == "/") { "Enter a server origin only, without path or credentials" }
-        return url
-    }
+    fun origin(value: String): HttpUrl = PhoneOrigin.parse(value)
 
     @Synchronized
     fun post(origin: HttpUrl, path: String, body: JSONObject, token: String? = null,

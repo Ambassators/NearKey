@@ -6,42 +6,80 @@ service, phone confirmation, biometrics, simulator or manual proof path.
 
 ## Build
 
-Use JDK 21 and an existing Android SDK with `platforms/android-37.0` and
-`build-tools/37.0.0`:
+Use JDK 17 or 21 and an existing Android SDK containing
+`platforms/android-37.0` and `build-tools/37.0.0`. For this workspace, the existing
+SDK is `/Users/jambe/Documents/Foreground/Tiktok CTF clone/tools/android-sdk`.
+From the repository root on this Mac:
 
 ```sh
+export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
+export ANDROID_HOME='/Users/jambe/Documents/Foreground/Tiktok CTF clone/tools/android-sdk'
 cd android
-export ANDROID_HOME=/opt/android-sdk   # or your installed SDK
-./gradlew --console=plain --no-daemon assembleDebug testDebugUnitTest lintDebug
+./gradlew --console=plain --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 node tools/check-contract.mjs
 ```
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`. The official Gradle 8.13 wrapper
-scripts/JAR and distribution SHA-256 are checked in. AGP 8.11.1, Kotlin 2.2.21,
-OkHttp 4.12.0 and test dependencies are pinned. Project dependencies can download;
-automatic SDK downloads are disabled. No SDK folder renaming or system installs.
-Build configs are repository files, deliberately outside personal chezmoi management.
+On another machine, set those variables to its installed JDK/SDK. APK:
+`app/build/outputs/apk/debug/app-debug.apk`. Gradle 8.13, AGP 8.11.1, Kotlin 2.2.21,
+OkHttp 4.12.0, AndroidX Activity 1.9.3, ZXing Embedded 4.3.0 and test
+dependencies are pinned. SDK downloads are disabled.
 
-The installed platform has a **minor API** suffix. `compileSdk = 37` plus
-`compileSdkMinor = 0` resolves `android-37.0`; integer `compileSdk = 37` alone
-would look for `android-37`. The minor property exists in the installed AGP
-8.11.1 API (verified from its Gradle API JAR); the current
-[official CommonExtension docs](https://developer.android.com/reference/tools/gradle-api/8.11/com/android/build/api/dsl/CommonExtension#compileSdkMinor())
-describe that property (their added-version annotation says 8.11.2).
-AGP 8.11.1 was tested up to SDK 36.0, so it emits an **unsuppressed compatibility
-warning** for 37.0. This is not a claim of official SDK 37 validation. Compilation,
-unit tests and lint determine what actually works on this host. Target SDK is 36,
-minimum phone API is 26; Java/Kotlin bytecode targets 17 while the build uses JDK 21.
+`compileSdk = 37` with `compileSdkMinor = 0` resolves the installed
+`android-37.0` platform; do not rename SDK folders. AGP emits a compatibility
+warning because it was tested up to SDK 36.0. Target SDK is 36, minimum phone API
+is 26 and Java/Kotlin bytecode targets 17. Build, unit tests and lint check the
+configured combination; they do not test physical Bluetooth.
+
+## USB debug workflow
+
+For a local demo, connect an authorized Android device over USB. From the
+repository root after building:
+
+```sh
+"$ANDROID_HOME/platform-tools/adb" devices
+"$ANDROID_HOME/platform-tools/adb" install -r android/app/build/outputs/apk/debug/app-debug.apk
+"$ANDROID_HOME/platform-tools/adb" reverse tcp:5173 tcp:5173
+"$ANDROID_HOME/platform-tools/adb" reverse --list
+"$ANDROID_HOME/platform-tools/adb" shell am start -n dev.nearkey.passive/.MainActivity
+npm start
+```
+
+If several devices are connected, add `-s <device-serial>` to each adb command.
+Open `http://localhost:5173` in Mac Chromium and scan its enrollment QR in the
+phone's **NearKey Authenticator** app, or enter that same origin manually. The reverse mapping forwards the phone's
+localhost port to the Mac server; it supports the phone HTTP requests and
+WebSocket channel. Keep USB connected and restore the mapping after reconnecting.
+
+The debug manifest and API client allow HTTP for this local workflow. Release
+builds require HTTPS/WSS. USB carries the network channel only: login still
+requires a real Bluetooth GATT proof. Installation with `-r` preserves local
+app credentials and keys. The application ID and Keystore alias retain their
+existing names so an upgrade does not silently discard enrollment.
+
+To prefill the same enrollment details over adb, pass the browser's setup URI as
+an explicit activity extra. Preserve the inner quotes around the complete URI so
+its `&` characters stay inside the remote shell argument:
+
+```sh
+"$ANDROID_HOME/platform-tools/adb" shell \
+  "am start -n dev.nearkey.passive/.MainActivity --es enrollment_uri 'nearkey://enroll?v=1&origin=http%3A%2F%2Flocalhost%3A5173&code=REPLACE_WITH_PAIRING_CODE'"
+```
+
+Replace the example code with the current pairing code. The URI only prefills the
+server origin and code; review them and tap **Enroll phone** to submit enrollment.
 
 ## Demo setup
 
-1. Deploy the sibling server with a reachable HTTPS origin and a publicly trusted
-   certificate. Paste that origin, not a path, into the phone. Never paste a token.
-   The release variant rejects HTTP; **debug only** permits HTTP for local testing.
-   `localhost` on the phone is the phone itself, not the Mac. TLS trust and hostname
-   checks are not disabled. The app contains no deployment URL or credentials.
-2. Start a pending password login in Mac Chromium, create enrollment and paste its pairing code
-   into the app. Tap **Enroll phone**. The P-256 private key lives in
+1. Use the USB debug workflow above or deploy the server at a reachable HTTPS
+   origin with a trusted certificate. The setup QR carries that origin; manual
+   entry takes the origin, not a path.
+   Without adb reverse, `localhost` means the phone itself. Release requires HTTPS;
+   TLS trust and hostname checks remain enabled. The app has no preset server URL.
+2. Start a pending password login in Mac Chromium and create enrollment. Tap
+   **Scan setup QR code** in the app and scan the browser's QR. Review the server
+   address; no code entry is needed. **Enter details manually** opens the optional
+   pairing-code and server-origin fields. Tap
+   **Enroll phone**. The P-256 private key lives in
    AndroidKeyStore, non-exportable, without user-authentication requirements.
    Hardware backing is best effort, reported from KeyInfo, never guaranteed.
    Enrollment sends DER SPKI and DER SHA256withECDSA proof with unpadded base64url.
@@ -55,15 +93,25 @@ minimum phone API is 26; Java/Kotlin bytecode targets 17 while the build uses JD
    advertises for the remaining server deadline, and POSTs readiness only after
    Android's `onStartSuccess`. The browser tries its remembered permitted device
    or offers its user-gesture chooser, writes <=20-byte newline JSON chunks with
-   response, reads the proof, and relays only the DER signature to its own session.
+   response, reads the proof, and relays only the DER signature to its pending session.
    There is no browser approval token in this app, BLE, or advertisement.
+
+Enrollment QR scanning and the `enrollment_uri` activity extra use the same strict
+setup URI parser. Invalid setup links leave the existing fields unchanged. A QR
+contains the temporary origin and pairing code, never a password, phone token or
+Bluetooth login proof. The server still checks the pairing deadline and single
+use when **Enroll phone** is tapped. Scanning does not authorize a login or skip
+Bluetooth verification.
+
+The scanner runs locally using ZXing and requests Camera permission when opened.
+Manual entry remains available if camera access is denied or unavailable.
 
 The request buffer is bounded at 1024 bytes. ID, nonce, version, type, server
 pending state and wall/monotonic deadlines are checked before signing the exact
 UTF-8 version 2 login text defined in the shared contract, binding challenge ID,
 nonce, phone ID, expiry, username, service name and pending-session identifier.
-The prefix is `NEARKEY-LOGIN-V2`; enrollment retains `NEARKEY-ENROLL-V1`. Proof exists before the final write
-ACK. GATT reads support offsets and MTU-1 slices, including an empty terminal
+The prefix is `NEARKEY-LOGIN-V2`; enrollment retains `NEARKEY-ENROLL-V1`.
+Proof exists before the final write ACK. GATT reads support offsets and MTU-1 slices, including an empty terminal
 read; the server stays open while a central reads after advertising stops.
 Only one central is accepted. Disconnect clears buffers/proof and readvertises
 only before the original deadline. Cancel, expiry, channel loss, local reset and
@@ -86,17 +134,21 @@ forget local enrollment before pairing anew. An interrupted enrollment may have
 committed on the server without saving the token locally; resolve it with the
 same offline reset, not password-only replacement.
 
-`ProtocolTest` exercises domain texts, challenge/request rejection, setup/expiry,
-chunk bounds and long-read slices. It also produces ephemeral **JVM** P-256
+`EnrollmentQrTest` checks valid setup links, malformed encodings, unexpected or
+duplicate fields, unsafe origins and debug-only HTTP. `ProtocolTest` exercises
+domain texts, challenge/request rejection, setup/expiry, chunk bounds and
+long-read slices. It also produces ephemeral **JVM** P-256
 vectors; `tools/check-contract.mjs` verifies them with Node against the actual
 shared module. These tests do not exercise AndroidKeyStore, Bluetooth,
 permissions, lifecycle on a physical phone, or the sibling server end-to-end.
 
-**Manual hardware gate (not tested from SSH):** install the APK on a peripheral-
+**Manual hardware gate:** install the APK on a peripheral-
 capable phone and use Mac Chromium. Verify first chooser permission, remembered
 reconnect and chooser fallback, dashboard locked before verification, one login
 completion only, wrong phone/nonce/session context rejection,
 long proof reads at default MTU, disconnect/retry, cancel/logout/expiry, app
 background/channel-loss cleanup, permission denial, disabled radio and a phone
-without peripheral support. Server API/replay/session tests belong to the server
-stream. No claim of real Bluetooth testing is made here.
+without peripheral support. Also check QR camera capture, cancellation, Camera
+permission denial/manual fallback, and explicit enrollment after scan or adb
+prefill. Server API/replay/session tests run separately.
+Installing or launching the APK does not establish that Bluetooth verification works.

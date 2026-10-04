@@ -1,27 +1,33 @@
 package dev.nearkey.passive
 
 import android.Manifest
-import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private val api = PhoneApi()
     private val key = SigningKey()
@@ -29,6 +35,11 @@ class MainActivity : Activity() {
     private lateinit var urlInput: EditText
     private lateinit var codeInput: EditText
     private lateinit var enrollButton: Button
+    private lateinit var scanButton: Button
+    private lateinit var manualButton: Button
+    private lateinit var manualInputs: LinearLayout
+    private lateinit var setupReview: TextView
+    private lateinit var enrollmentHelp: TextView
     private lateinit var setupButton: Button
     private lateinit var onlineText: TextView
     private lateinit var bleText: TextView
@@ -37,6 +48,8 @@ class MainActivity : Activity() {
     private var foreground = false
     private var generation = 0
     private var enrolling = false
+    private var manualExpanded = false
+    private var setupLoaded = false
     private var socket: WebSocket? = null
     private var online = false
     private var reconnectDelay = 1000L
@@ -47,6 +60,11 @@ class MainActivity : Activity() {
     private var permissionRequested = false
     private var readyInFlight: String? = null
     private val reconnect = Runnable { connect() }
+    private val scanner = registerForActivityResult(ScanContract()) { result ->
+        if (result.contents == null) {
+            statusText.text = "Scan cancelled. You can scan again or enter the server URL and pairing code manually."
+        } else populateEnrollment(result.contents)
+    }
     private val ticker = object : Runnable {
         override fun run() {
             if (!foreground) return
@@ -72,20 +90,49 @@ class MainActivity : Activity() {
         }
         text("NearKey · Authenticator").textSize = 23f
         text("Your phone verifies browser logins over Bluetooth. Keep this app open with Bluetooth enabled; verification happens automatically.")
+        enrollmentHelp = text("Scan the setup QR code shown in your browser. No code entry needed.")
+        manualInputs = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
         urlInput = EditText(this).apply {
             hint = "Server URL (https://…)"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setSingleLine(true); setText(prefs.getString("origin", "")); layout.addView(this)
+            setSingleLine(true); setText(prefs.getString("origin", "")); manualInputs.addView(this)
         }
         codeInput = EditText(this).apply {
             hint = "Paste pairing code from browser"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setSingleLine(true); isSaveEnabled = false; layout.addView(this)
+            setSingleLine(true); isSaveEnabled = false; manualInputs.addView(this)
         }
+        scanButton = Button(this).apply {
+            text = "Scan setup QR code"
+            setOnClickListener {
+                if (this@MainActivity.foreground && !enrolled() && !enrolling) {
+                    scanner.launch(ScanOptions().apply {
+                        setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                        setPrompt("Scan the setup QR code shown in NearKey")
+                        setBeepEnabled(false)
+                        setOrientationLocked(false)
+                    })
+                }
+            }
+            layout.addView(this)
+        }
+        setupReview = text("").apply { visibility = View.GONE }
         enrollButton = Button(this).apply {
             text = "Enroll phone"
             setOnClickListener { enroll() }; layout.addView(this)
         }
+        manualButton = Button(this).apply {
+            text = "Enter details manually"
+            setOnClickListener {
+                manualExpanded = !manualExpanded
+                updateControls()
+            }
+            layout.addView(this)
+        }
+        layout.addView(manualInputs)
         setupButton = Button(this).apply {
             text = "Advertise setup for 60 seconds"
             setOnClickListener { withPermissions { startBluetooth(pending) } }; layout.addView(this)
@@ -105,7 +152,7 @@ class MainActivity : Activity() {
         challengeText = text("Ready for a browser login")
         statusText = text(if (enrolled())
             "Locally enrolled · ${key.backing()}. Keep the app open for the authenticated phone channel."
-            else "Start signing in to NearKey in your browser, then enroll once using its pairing code and reachable server URL.")
+            else "Start signing in to NearKey in your browser, then scan its setup QR code.")
         Button(this).apply {
             text = "Forget local enrollment"
             setOnClickListener {
@@ -117,7 +164,54 @@ class MainActivity : Activity() {
             layout.addView(this)
         }
         setContentView(ScrollView(this).apply { addView(layout) })
+        val manualChanges = object : TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(value: Editable?) {
+                if (setupLoaded) {
+                    setupLoaded = false
+                    setupReview.text = ""
+                    updateControls()
+                }
+            }
+        }
+        urlInput.addTextChangedListener(manualChanges)
+        codeInput.addTextChangedListener(manualChanges)
         updateControls()
+        consumeEnrollmentIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeEnrollmentIntent(intent)
+    }
+
+    private fun consumeEnrollmentIntent(intent: Intent) {
+        if (!intent.hasExtra("enrollment_uri")) return
+        val value = try { intent.getStringExtra("enrollment_uri") } catch (_: Exception) { null }
+        intent.removeExtra("enrollment_uri")
+        if (value == null) statusText.text = "Invalid setup QR code"
+        else populateEnrollment(value)
+    }
+
+    private fun populateEnrollment(value: String) {
+        if (enrolled() || enrolling) {
+            statusText.text = "This phone is already enrolled or enrollment is in progress. Setup cannot replace its enrollment."
+            return
+        }
+        try {
+            val setup = EnrollmentQr.parse(value)
+            urlInput.setText(setup.origin.toString())
+            codeInput.setText(setup.pairingCode)
+            setupLoaded = true
+            manualExpanded = false
+            setupReview.text = "Setup ready\nServer: ${setup.origin}\nReview this server, then tap Enroll phone."
+            statusText.text = "Setup details loaded. No typing needed."
+            updateControls()
+        } catch (e: Exception) {
+            statusText.text = e.message ?: "Invalid setup QR code"
+        }
     }
 
     override fun onStart() {
@@ -157,9 +251,20 @@ class MainActivity : Activity() {
     private fun enrolled() = prefs.getString("token", null) != null
 
     private fun updateControls() {
-        urlInput.isEnabled = !enrolled() && !enrolling
-        codeInput.isEnabled = !enrolled() && !enrolling
-        enrollButton.isEnabled = foreground && !enrolled() && !enrolling
+        val needsEnrollment = !enrolled()
+        val canEdit = needsEnrollment && !enrolling
+        urlInput.isEnabled = canEdit
+        codeInput.isEnabled = canEdit
+        enrollmentHelp.visibility = if (needsEnrollment) View.VISIBLE else View.GONE
+        scanButton.visibility = if (needsEnrollment) View.VISIBLE else View.GONE
+        manualButton.visibility = if (needsEnrollment) View.VISIBLE else View.GONE
+        manualInputs.visibility = if (needsEnrollment && manualExpanded) View.VISIBLE else View.GONE
+        setupReview.visibility = if (needsEnrollment && setupLoaded && !manualExpanded) View.VISIBLE else View.GONE
+        enrollButton.visibility = if (needsEnrollment && (setupLoaded || manualExpanded)) View.VISIBLE else View.GONE
+        enrollButton.isEnabled = foreground && canEdit
+        scanButton.isEnabled = foreground && canEdit
+        manualButton.isEnabled = foreground && canEdit
+        manualButton.text = if (manualExpanded) "Hide manual details" else "Enter details manually"
         setupButton.isEnabled = foreground && enrolled() && !enrolling
         setupButton.text = if (pending == null) "Advertise setup for 60 seconds" else "Retry pending challenge advertising"
     }
@@ -393,7 +498,7 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != 1) return
         permissionRequested = false
@@ -416,6 +521,9 @@ class MainActivity : Activity() {
         val credentialsErased = try { prefs.edit().clear().commit() } catch (_: Exception) { false }
         val keyErased = try { key.delete(); true } catch (_: Exception) { false }
         urlInput.text.clear(); codeInput.text.clear()
+        setupLoaded = false
+        manualExpanded = false
+        setupReview.text = ""
         val failedParts = listOfNotNull(
             if (credentialsErased) null else "credential storage",
             if (keyErased) null else "Keystore"

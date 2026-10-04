@@ -39,8 +39,9 @@ class Inbox {
 }
 
 async function fixture(t, options = {}) {
-  let time = options.initialTime ?? 1_800_000_000_000;
-  const app = await createApp({now: () => time, ...options});
+  const {initialTime = 1_800_000_000_000, ...appOptions} = options;
+  let time = initialTime;
+  const app = await createApp({now: () => time, ...appOptions});
   app.server.listen(0, '127.0.0.1');
   await once(app.server, 'listening');
   t.after(() => app.close());
@@ -216,7 +217,7 @@ test('pairing is single-use, session-bound and cannot replace an existing phone'
   assert.equal((await f.request('/api/phones/' + phone.phoneId, {method: 'DELETE', cookie: phone.cookie})).status, 404);
   assert.equal((await f.request('/api/account', {token: phone.deviceToken})).status, 401);
   assert.equal((await f.request('/api/challenges', {method: 'POST', token: phone.deviceToken,
-    body: {recipientId: 'alex', amountCents: 1, note: ''}, headers: {origin: ORIGIN}})).status, 401);
+    body: {}, headers: {origin: ORIGIN}})).status, 401);
 });
 
 test('superseded/expired/logout pairing codes and wrong enrollment domains cannot enroll', async (t) => {
@@ -312,7 +313,8 @@ test('wrong real key/nonce/id/domain and tampered metadata never authorize', asy
     assert.equal((await f.complete(phone, challenge, {signature: bad})).status, 403);
   }
   for (const extra of [{nonce: challenge.nonce}, {phoneId: phone.phoneId}, {publicKey: phone.pair.encoded},
-    {amountCents: 1}, {note: 'changed'}, {operation: {amountCents: 1}}]) {
+    {sessionId: challenge.sessionId}, {username: 'other'}, {serviceName: 'Other'},
+    {expiresAt: challenge.expiresAt + 1}, {purpose: 'login'}]) {
     assert.equal((await f.complete(phone, challenge, extra)).status, 400);
   }
   const local = structuredClone(challenge);
