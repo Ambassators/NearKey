@@ -70,15 +70,17 @@ class BlePeripheral(
     private fun advertise() {
         if (!live() || peer != null || advertisement != null) return
         try {
+            val bleAdvertiser = advertiser ?: error("BLE advertiser unavailable")
             val cb = object : AdvertiseCallback() {
                 override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
                     handler.post {
                         if (advertisement !== this || !live()) {
-                            try { advertiser?.stopAdvertising(this) } catch (_: SecurityException) { }
+                            try { bleAdvertiser.stopAdvertising(this) } catch (_: Exception) { }
                             return@post
                         }
                         if (peer != null) stopAdvertising()
                         else onStatus(if (challenge == null) "Setup advertising (60 seconds; no signing)" else "Advertising for pending challenge")
+                        if (!active) return@post
                         // Only actual onStartSuccess earns a readiness ACK; starting GATT is not enough.
                         if (challenge != null) onReady()
                     }
@@ -97,7 +99,7 @@ class BlePeripheral(
             // Service UUID only: no name, operation, phone/key identifier, nonce or token.
             val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(UUID.fromString(Protocol.SERVICE)))
                 .setIncludeDeviceName(false).setIncludeTxPowerLevel(false).build()
-            advertiser!!.startAdvertising(settings, data, cb)
+            bleAdvertiser.startAdvertising(settings, data, cb)
         } catch (e: Exception) { fail(e.message ?: "Cannot advertise") }
     }
 
@@ -105,7 +107,8 @@ class BlePeripheral(
         override fun onServiceAdded(status: Int, service: BluetoothGattService) {
             handler.post {
                 if (!active) return@post
-                if (status != BluetoothGatt.GATT_SUCCESS) fail("GATT service registration failed ($status)")
+                if (!live()) fail("Bluetooth window expired")
+                else if (status != BluetoothGatt.GATT_SUCCESS) fail("GATT service registration failed ($status)")
                 else advertise()
             }
         }
@@ -119,15 +122,18 @@ class BlePeripheral(
                             server?.cancelConnection(device)
                             return@post
                         }
+                        // A duplicate connected callback must not erase an in-progress request or proof.
+                        if (peer == device) return@post
                         peer = device
                         buffer.clear(); proof = null; mtu = 23
                         stopAdvertising()
+                        if (!active) return@post
                         onStatus(if (challenge == null) "Setup central connected; signing disabled" else "Central connected; waiting for handshake")
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED && peer == device) {
                         peer = null
                         buffer.clear(); proof = null; mtu = 23
                         onStatus("Central disconnected")
-                        if (live()) advertise() else close()
+                        if (live()) advertise() else fail("Bluetooth window expired")
                     }
                 } catch (e: Exception) { fail(e.message ?: "Bluetooth connection failed") }
             }
@@ -207,8 +213,14 @@ class BlePeripheral(
     }
 
     private fun stopAdvertising() {
-        advertisement?.let { try { advertiser?.stopAdvertising(it) } catch (_: SecurityException) { } }
+        val cb = advertisement
         advertisement = null
+        try {
+            if (cb != null) advertiser?.stopAdvertising(cb)
+        } catch (e: Exception) {
+            // Detach first so fail -> close cannot recursively stop the same advertisement.
+            if (active) fail(if (e is SecurityException) "Bluetooth permission was revoked" else "Cannot stop BLE advertising")
+        }
     }
 
     private fun fail(message: String) { close(); onError(message) }
@@ -219,11 +231,12 @@ class BlePeripheral(
         stopAdvertising()
         val gatt = server
         server = null
-        peer?.let { try { gatt?.cancelConnection(it) } catch (_: SecurityException) { } }
+        peer?.let { try { gatt?.cancelConnection(it) } catch (_: Exception) { } }
         peer = null
         buffer.clear(); proof = null; mtu = 23
-        try { gatt?.clearServices() } catch (_: SecurityException) { }
-        try { gatt?.close() } catch (_: SecurityException) { }
+        // Adapter shutdown can also throw IllegalStateException; still attempt every release.
+        try { gatt?.clearServices() } catch (_: Exception) { }
+        try { gatt?.close() } catch (_: Exception) { }
         advertiser = null
     }
 }
