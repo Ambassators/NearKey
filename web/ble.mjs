@@ -7,6 +7,10 @@ const DEVICE_KEY = 'nearkey.bluetoothDeviceId';
 const encoder = new TextEncoder();
 
 export function requestChunks(challenge) {
+  if (challenge?.v !== CONTRACT_VERSION || typeof challenge.id !== 'string' || !challenge.id
+      || typeof challenge.nonce !== 'string' || !challenge.nonce) {
+    throw new Error('Invalid server Bluetooth challenge.');
+  }
   const bytes = encoder.encode(`${JSON.stringify(bleRequest(challenge))}\n`);
   if (bytes.length > 1024) throw new Error('Bluetooth request is too large.');
   const chunks = [];
@@ -114,14 +118,21 @@ export class PhoneBluetooth {
   async prove(challenge, signal) {
     const problem = this.availability();
     if (problem) throw new Error(problem);
-    if (signal?.aborted || Date.now() >= challenge.expiresAt) throw new Error('This challenge has expired or was cancelled.');
+    // Snapshot the server identity/deadline once; retries never extend its lifetime.
+    challenge = {v: challenge?.v, id: challenge?.id, nonce: challenge?.nonce, expiresAt: challenge?.expiresAt};
+    if (!Number.isFinite(challenge.expiresAt) || signal?.aborted || Date.now() >= challenge.expiresAt) {
+      throw new Error('This challenge has expired or was cancelled.');
+    }
     if (this.busy) throw new Error('Bluetooth is still closing its previous connection. Try again shortly.');
-    const token = {controller: new AbortController(), device: null, pending: new Set()};
+    const chunks = requestChunks(challenge);
+    const token = {controller: new AbortController(), device: null, pending: new Set(), expiresAt: challenge.expiresAt};
     this.active = token;
     const cancel = () => this.abort(token, 'Bluetooth attempt cancelled.');
     signal?.addEventListener('abort', cancel, {once: true});
-    const timer = setTimeout(() => this.abort(token, 'Bluetooth connection timed out. Choose / reconnect phone to retry.'),
-      Math.min(this.timeoutMs, challenge.expiresAt - Date.now()));
+    const timer = setTimeout(() => this.abort(token, Date.now() >= token.expiresAt
+      ? 'Challenge expired before the phone proof arrived.'
+      : 'Bluetooth connection timed out. Choose / reconnect phone to retry.'),
+      Math.min(this.timeoutMs, token.expiresAt - Date.now()));
     const disconnected = () => this.abort(token, 'Phone disconnected. Reconnect to retry this pending challenge.');
     try {
       const device = await this.remembered(token);
@@ -135,44 +146,54 @@ export class PhoneBluetooth {
       const service = await this.step(token, () => server.getPrimaryService(BLE_SERVICE_UUID));
       const request = await this.step(token, () => service.getCharacteristic(BLE_REQUEST_UUID));
       const proof = await this.step(token, () => service.getCharacteristic(BLE_PROOF_UUID));
-      for (const chunk of requestChunks(challenge)) {
+      for (const chunk of chunks) {
         await this.step(token, () => request.writeValueWithResponse(chunk));
       }
       // Android stores the full proof before acknowledging the final newline write.
       // readValue uses GATT long reads; do not slice the returned DataView to 20 bytes.
       const value = await this.step(token, () => proof.readValue());
+      if (token.controller.signal.aborted) throw token.controller.signal.reason;
       if (Date.now() >= challenge.expiresAt) throw new Error('Challenge expired before the phone proof arrived.');
       return parseProof(value, challenge.id);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);
       token.device?.removeEventListener('gattserverdisconnected', disconnected);
-      token.device?.gatt.disconnect();
+      try { token.device?.gatt?.disconnect(); } catch { /* disconnected/unavailable native device */ }
       this.release(token);
     }
   }
 
   async step(token, operation) {
     const signal = token.controller.signal;
+    if (Date.now() >= token.expiresAt) this.abort(token, 'Challenge expired before the phone proof arrived.');
     if (signal.aborted) throw signal.reason;
     const pending = Promise.resolve(typeof operation === 'function' ? operation() : operation);
     token.pending.add(pending);
     pending.then(() => token.pending.delete(pending), () => token.pending.delete(pending));
     let listener;
     try {
-      return await Promise.race([pending, new Promise((_, reject) => {
+      const value = await Promise.race([pending, new Promise((_, reject) => {
         listener = () => reject(signal.reason);
         signal.addEventListener('abort', listener, {once: true});
+        // A native operation can synchronously disconnect/cancel before registration.
+        if (signal.aborted) listener();
       })]);
+      if (Date.now() >= token.expiresAt) this.abort(token, 'Challenge expired before the phone proof arrived.');
+      if (signal.aborted) throw signal.reason;
+      return value;
     } finally {
       signal.removeEventListener('abort', listener);
-      if (signal.aborted) token.device?.gatt.disconnect();
+      if (signal.aborted) {
+        try { token.device?.gatt?.disconnect(); } catch { /* preserve cancellation reason */ }
+      }
     }
   }
 
   abort(token, message) {
+    if (token.controller.signal.aborted) return;
     token.controller.abort(new Error(message));
-    token.device?.gatt.disconnect();
+    try { token.device?.gatt?.disconnect(); } catch { /* release still waits for native work */ }
   }
 
   cancel() {
