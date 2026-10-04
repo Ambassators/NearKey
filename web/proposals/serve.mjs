@@ -5,8 +5,8 @@ import path from 'node:path';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const routes = new Map();
-const types = {'.html': 'text/html', '.mjs': 'text/javascript', '.ttf': 'font/ttf', '.md': 'text/plain'};
-for (const name of ['index.html', '01-sage.html', '02-signal.html', '03-paper.html', '04-workspace.html', '05-studio.html', 'prototype.mjs', 'README.md']) routes.set(`/web/proposals/${name}`, path.join(directory, name));
+const types = {'.html': 'text/html', '.mjs': 'text/javascript', '.ttf': 'font/ttf'};
+for (const name of ['index.html', '01-sage.html', '02-signal.html', '03-paper.html', '04-workspace.html', '05-studio.html', 'prototype.mjs']) routes.set(`/web/proposals/${name}`, path.join(directory, name));
 for (const name of ['dm-sans.ttf', 'manrope.ttf']) routes.set(`/web/fonts/${name}`, path.join(directory, '..', 'fonts', name));
 routes.set('/', path.join(directory, 'index.html'));
 const port = Number(process.env.PROPOSALS_PORT || 4173);
