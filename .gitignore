@@ -1,6 +1,12 @@
-data/
+node_modules/
 .env
+.env.*
+!.env.example
+PLAN.md
+.gradle/
 android/.gradle/
-android/local.properties
 android/**/build/
+android/local.properties
 *.apk
+*.aab
+.DS_Store
