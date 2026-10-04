@@ -286,11 +286,17 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         if (typeof body.label !== 'string' || !body.label.trim() || body.label.length > 40) {
           fail(400, 'invalid_label', 'Phone label must contain 1–40 characters');
         }
+        const enrollment = pairing;
         let key;
         try {
           key = parsePublicKey(body.publicKey);
           if (!verifyProof(key, enrollmentText(body.pairingCode, body.publicKey), body.signature)) throw new Error();
         } catch { fail(400, 'invalid_enrollment_proof', 'Expected P-256 SPKI key and valid DER proof of possession'); }
+        // Proof verification must not let a code or its originating session outlive its deadline.
+        sweep();
+        if (pairing !== enrollment || enrollment.expiresAt <= now() || !sessions.has(enrollment.session)) {
+          fail(401, 'invalid_pairing', 'Pairing code expired or invalid');
+        }
         phone = {id: randomUUID(), label: body.label.trim(), key, deviceToken: randomToken(), socket: null};
         pairing = null;
         json(res, 200, {phoneId: phone.id, deviceToken: phone.deviceToken});
