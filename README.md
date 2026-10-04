@@ -1,6 +1,6 @@
 > **Earlier commit history:** [View the commit logs in the original repository](https://github.com/Quinntyx/nearkey/commits).
 
-# NearKey — Bluetooth 2FA provider
+# NearKey, a Bluetooth 2FA provider
 
 NearKey is a two-factor authentication provider demo. Its setup wizard guides you through password sign-in, Android phone enrollment and Bluetooth verification. The dashboard then shows your saved app list.
 
@@ -19,18 +19,7 @@ The browser has three pages: `#/login` for the password, `#/loading` for phone e
 - Server-initiated, single-use login challenges lasting at most 60 seconds and bound to the original pending session.
 - Automatic phone signatures over immutable account, service, phone and session context; browser relays the proof.
 
-In local mode, phone pairing survives server restarts. The server saves the enrolled phone's identity, public key and connection credential in `.data/phone.json`; the Android private key remains in AndroidKeyStore. Restarting clears sign-in sessions, saved apps and verification history, so a fresh sign-in still requires both factors. Automatic signatures prove key possession, not user consent; BLE does not prevent relays or prove distance. Phone keys are non-exportable in AndroidKeyStore; hardware backing is not guaranteed.
-
-## Run the server and browser
-
-Requires Node 22+:
-
-```sh
-npm ci
-npm start
-```
-
-Local browser: <http://localhost:5173>. Demo credentials: `admin` / `mint-river-otter-47`. The server listens on `127.0.0.1:5173` by default. `HOST`, `PORT`, `PUBLIC_ORIGIN`, `PHONE_ORIGIN`, `DEMO_USERNAME`, `DEMO_PASSWORD` and `PAIRING_FILE` are environment variables; `.env` files are not automatically loaded.
+Phone pairing survives server restarts. The server saves the enrolled phone's identity, public key and connection credential in `.data/phone.json`; the Android private key remains in AndroidKeyStore. Restarting clears sign-in sessions, saved apps and verification history, so a fresh sign-in still requires both factors. Automatic signatures prove key possession, not user consent; BLE does not prevent relays or prove distance. Phone keys are non-exportable in AndroidKeyStore; hardware backing is not guaranteed.
 
 The default pairing file is relative to the repository, independent of the working directory. `PAIRING_FILE` can select another location. Keep this file private and backed up: it contains the phone connection credential and is excluded from Git. Only run one server against a given pairing file. A corrupt file or a changed account/browser origin stops startup rather than silently forgetting the phone. Pairings created by an older server that only stored them in memory need one final enrollment after upgrading; subsequent restarts preserve them.
 
@@ -73,9 +62,7 @@ Enclave and the same v2 Bluetooth protocol. See its setup guide, or run
 `./ios/tools/install.sh` with one unlocked iPhone connected after configuring
 your Apple development account in Xcode. Keep NearKey open during iPhone sign-in.
 
-Use JDK 17 or 21 and an Android SDK containing `platforms/android-37.0` and
-`build-tools/37.0.0`. Set `JAVA_HOME` and `ANDROID_HOME` to those installations.
-From `android/`:
+See [android/README.md](android/README.md) for existing SDK and JDK requirements. From `android/`:
 
 ```sh
 ./gradlew --no-daemon :app:assembleDebug
@@ -96,7 +83,7 @@ local server.
 
 Saved app entries are account metadata, not live third-party 2FA integrations.
 The list starts empty, supports up to 30 entries and persists across logins until
-the local demo server restarts; hosted mode preserves it across deployments. Adding an app requires completed Bluetooth
+the demo server restarts. Adding an app requires completed Bluetooth
 authentication; duplicate name/URL pairs are rejected. No app credentials are
 collected and app URLs are not fetched by the server.
 
@@ -108,27 +95,3 @@ Android also accepts the setup link from camera or scanner apps that can open
 `nearkey://enroll` links. The same validation and **Enroll phone** confirmation
 apply. Reviewed QR details survive screen rotation in memory; pairing codes are
 not written to saved state or disk.
-
-QR encoding runs locally in the browser using the vendored `qrcode-generator`
-2.0.4 module; its MIT license is in `web/qrcode-generator-LICENSE.txt`. No external
-QR service receives the pairing code.
-
-The verification screen's key-toss loading animation uses the vendored
-[anime.js](https://animejs.com) 4.5.0 ESM bundle (`web/anime.mjs`); its MIT
-license is in `web/anime-LICENSE.txt`. No animation assets load from a CDN.
-
-## Checks
-
-```sh
-npm test
-cd android
-./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
-node tools/check-contract.mjs
-```
-
-Run the cross-language contract check after Android unit tests generate its vectors. Browser Bluetooth tests are mocks; JVM tests do not exercise AndroidKeyStore or radios. A successful physical Mac-to-Android login remains the final demo gate.
-
-The version 2 protocol constants are in [shared/protocol.mjs](shared/protocol.mjs);
-Android login payloads and BLE framing are implemented in
-[Protocol.kt](android/app/src/main/java/dev/nearkey/passive/Protocol.kt). The phone
-signs automatically; explicit approval for each login is not implemented.
