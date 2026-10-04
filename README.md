@@ -56,6 +56,10 @@ listed in [.env.example](.env.example): `PUBLIC_ORIGIN`, `DEMO_USERNAME`,
 slash, a new nonempty demo password, and the read-write Redis REST
 token. Keep preview deployments on a separate state key.
 
+Connecting Upstash through Vercel's Storage integration supplies `KV_REST_API_URL`
+and `KV_REST_API_TOKEN` automatically; the app accepts these in place of the
+`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` variables.
+
 Deploy after saving the settings, open the production website and enroll the
 phone using its new QR code. Local phone pairing is not imported. Hosted sessions
 and apps survive deployments; local mode still resets them on restart.

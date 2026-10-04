@@ -2,6 +2,9 @@ import { validateOrigin } from './app.mjs';
 import { redisStore } from './shared-store.mjs';
 
 export function hostedConfig(env = process.env) {
+  env = {...env,
+    UPSTASH_REDIS_REST_URL: env.UPSTASH_REDIS_REST_URL || env.KV_REST_API_URL,
+    UPSTASH_REDIS_REST_TOKEN: env.UPSTASH_REDIS_REST_TOKEN || env.KV_REST_API_TOKEN};
   for (const key of ['PUBLIC_ORIGIN', 'DEMO_USERNAME', 'DEMO_PASSWORD',
     'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN']) {
     if (!env[key]) throw new Error(`Set ${key} before deploying NearKey`);
