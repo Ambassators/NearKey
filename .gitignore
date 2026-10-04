@@ -13,3 +13,8 @@ android/local.properties
 .DS_Store
 
 .vercel/
+
+# Local scratch repositories, challenge files, and generated previews.
+Nearkey/
+rowdyhacks/
+output/

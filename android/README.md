@@ -89,13 +89,12 @@ Manual phone verification after installing the APK:
 ## Build
 
 Use JDK 17 or 21 and an existing Android SDK containing
-`platforms/android-37.0` and `build-tools/37.0.0`. For this workspace, the existing
-SDK is `/Users/jambe/Documents/Foreground/Tiktok CTF clone/tools/android-sdk`.
-From the repository root on this Mac:
+`platforms/android-37.0` and `build-tools/37.0.0`. Set `ANDROID_HOME` to your
+installed SDK. From the repository root on a Mac:
 
 ```sh
 export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
-export ANDROID_HOME='/Users/jambe/Documents/Foreground/Tiktok CTF clone/tools/android-sdk'
+export ANDROID_HOME='/path/to/android-sdk'
 cd android
 ./gradlew --console=plain --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 node tools/check-contract.mjs

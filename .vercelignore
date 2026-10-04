@@ -2,5 +2,6 @@ android/
 Nearkey/
 .data/
 output/
+rowdyhacks/
 .env
 .env.*
