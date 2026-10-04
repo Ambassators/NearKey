@@ -94,7 +94,11 @@ async function staticFiles(root) {
     '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon'};
   const web = path.join(root, 'web');
   let names;
-  try { names = await readdir(web); } catch (error) { if (error.code === 'ENOENT') return files; throw error; }
+  try {
+    // Checking each asset is not enough if its parent directory is a symlink.
+    if (!(await lstat(web)).isDirectory()) return files;
+    names = await readdir(web);
+  } catch (error) { if (error.code === 'ENOENT') return files; throw error; }
   for (const name of names) {
     if (!/^[a-zA-Z0-9_-]+\.(html|mjs|js|css|svg|png|ico)$/.test(name) || name.includes('.test.')) continue;
     const file = path.join(web, name);
