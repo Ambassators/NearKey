@@ -38,9 +38,11 @@ export function validateOrigin(value) {
 }
 
 function json(res, status, body, headers = {}) {
+  if (res.destroyed || res.writableEnded) return;
+  const data = JSON.stringify(body);
   res.writeHead(status, {'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers});
-  res.end(JSON.stringify(body));
+  res.end(data);
 }
 
 function exactFields(body, fields) {
@@ -52,13 +54,15 @@ function exactFields(body, fields) {
 }
 
 function readJson(req) {
-  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] || '')) {
+  if (!/^application\/json(?:[ \t]*;[ \t]*charset[ \t]*=[ \t]*(?:utf-8|"utf-8"))?[ \t]*$/i.test(req.headers['content-type'] || '')) {
     fail(415, 'json_required', 'Send application/json');
   }
   if (req.headers['content-encoding']) fail(415, 'encoding_unsupported', 'Compressed bodies are not supported');
   if (Number(req.headers['content-length']) > BODY_LIMIT) fail(413, 'body_too_large', 'JSON body exceeds 4096 bytes');
+  if (req.destroyed || req.aborted) fail(400, 'invalid_body', 'Could not read body');
   return new Promise((resolve, reject) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
     const cleanup = () => {
       clearTimeout(timer);
@@ -67,7 +71,14 @@ function readJson(req) {
       req.off('error', onError);
       req.off('aborted', onAborted);
     };
-    const rejectBody = (error) => { cleanup(); req.resume(); reject(error); };
+    const rejectBody = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      chunks.length = 0;
+      req.resume();
+      reject(error);
+    };
     const onError = () => rejectBody(new ApiError(400, 'invalid_body', 'Could not read body'));
     const onAborted = onError;
     const onData = (chunk) => {
@@ -76,6 +87,8 @@ function readJson(req) {
       chunks.push(chunk);
     };
     const onEnd = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
       try {
         const text = new TextDecoder('utf-8', {fatal: true}).decode(Buffer.concat(chunks));
@@ -166,7 +179,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   }
   function sameOrigin(req, mutation = false) {
     if ((mutation && req.headers.origin !== publicOrigin)
-        || (req.headers.origin && req.headers.origin !== publicOrigin)
+        || (req.headers.origin !== undefined && req.headers.origin !== publicOrigin)
         || req.headers['sec-fetch-site'] === 'cross-site') {
       fail(403, 'origin_rejected', 'Use the configured same-origin browser');
     }
@@ -205,8 +218,16 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
     try {
       sweep();
       rateLimit(req, 'http', 240);
-      const url = new URL(req.url, publicOrigin);
-      if (url.origin !== publicOrigin || url.search) fail(400, 'invalid_url', 'Query strings and foreign URLs are not supported');
+      // Both browser fetch and native OkHttp send origin-form request targets.
+      // Check the raw target before URL parsing can discard fragments or controls.
+      if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//')
+          || /[\u0000-\u0020\u007f\\?#]/.test(req.url) || /%(?![a-f0-9]{2})/i.test(req.url)) {
+        fail(400, 'invalid_url', 'Use a path without query strings, fragments or foreign URLs');
+      }
+      let url;
+      try { url = new URL(req.url, publicOrigin); }
+      catch { fail(400, 'invalid_url', 'Invalid request URL'); }
+      if (url.origin !== publicOrigin || url.search || url.hash) fail(400, 'invalid_url', 'Query strings and foreign URLs are not supported');
       const route = url.pathname;
       if (req.method === 'GET' && assets.has(route)) {
         sameOrigin(req);
@@ -220,7 +241,11 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         return;
       }
       const isPhoneRoute = route === '/api/phones/enroll' || route.startsWith('/api/phone/');
-      if (!isPhoneRoute) sameOrigin(req, req.method !== 'GET');
+      if (isPhoneRoute) {
+        if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] === 'cross-site') {
+          fail(403, 'origin_rejected', 'Phone API is native-app only');
+        }
+      } else sameOrigin(req, req.method !== 'GET');
       if (req.method === 'POST' && ['/api/login', '/api/phones/enroll'].includes(route)) {
         rateLimit(req, 'credentials', 10);
       }
