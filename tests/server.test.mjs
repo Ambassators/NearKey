@@ -1,0 +1,577 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import { WebSocket } from 'ws';
+import { createApp, validateOrigin } from '../server/app.mjs';
+import { parsePublicKey, parseSignature } from '../server/crypto.mjs';
+import { approvalText, enrollmentText, CHALLENGE_TTL_MS } from '../shared/protocol.mjs';
+
+const ORIGIN = 'http://localhost:5173';
+const keyPair = (curve = 'prime256v1') => {
+  const pair = generateKeyPairSync('ec', {namedCurve: curve});
+  return {...pair, encoded: pair.publicKey.export({format: 'der', type: 'spki'}).toString('base64url')};
+};
+const signature = (pair, text, dsaEncoding = 'der') => sign('sha256', Buffer.from(text, 'utf8'),
+  {key: pair.privateKey, dsaEncoding}).toString('base64url');
+const proof = (pair, challenge) => signature(pair, approvalText(challenge.id, challenge.nonce));
+
+class Inbox {
+  constructor(ws) {
+    this.messages = [];
+    this.waiters = [];
+    ws.on('message', (data) => {
+      const message = JSON.parse(data.toString());
+      const waiter = this.waiters.shift();
+      if (waiter) { clearTimeout(waiter.timer); waiter.resolve(message); }
+      else this.messages.push(message);
+    });
+  }
+  next() {
+    if (this.messages.length) return Promise.resolve(this.messages.shift());
+    return new Promise((resolve, reject) => {
+      const waiter = {resolve, timer: setTimeout(() => reject(new Error('WS message timeout')), 2000)};
+      this.waiters.push(waiter);
+    });
+  }
+}
+
+async function fixture(t, options = {}) {
+  let time = 1_800_000_000_000;
+  const app = await createApp({now: () => time, ...options});
+  app.server.listen(0, '127.0.0.1');
+  await once(app.server, 'listening');
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  async function request(route, {method = 'GET', body, cookie, token, headers = {}} = {}) {
+    const merged = {...(method !== 'GET' ? {'Content-Type': 'application/json', Origin: ORIGIN} : {}),
+      ...(cookie ? {Cookie: cookie} : {}), ...(token ? {Authorization: `Bearer ${token}`} : {}), ...headers};
+    if (token || route === '/api/phones/enroll') delete merged.Origin;
+    const response = await fetch(base + route, {method, headers: merged,
+      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)});
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = text; }
+    return {status: response.status, data, headers: response.headers};
+  }
+  async function login() {
+    const result = await request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}});
+    assert.equal(result.status, 200);
+    return result.headers.get('set-cookie').split(';')[0];
+  }
+  async function pair(cookie = undefined, pair = keyPair()) {
+    cookie ||= await login();
+    const pairing = await request('/api/pairing', {method: 'POST', body: {}, cookie});
+    assert.equal(pairing.status, 200);
+    const body = {pairingCode: pairing.data.pairingCode, publicKey: pair.encoded, label: 'Android phone',
+      signature: signature(pair, enrollmentText(pairing.data.pairingCode, pair.encoded))};
+    const enrolled = await request('/api/phones/enroll', {method: 'POST', body});
+    assert.equal(enrolled.status, 200);
+    return {cookie, pair, ...enrolled.data, pairing: pairing.data, enrollment: body};
+  }
+  async function connect(token) {
+    const ws = new WebSocket(base.replace('http:', 'ws:') + '/api/phone-channel',
+      {headers: {Authorization: `Bearer ${token}`}});
+    ws.on('error', () => {});
+    const inbox = new Inbox(ws);
+    await once(ws, 'open');
+    const ready = await inbox.next();
+    assert.equal(ready.type, 'ready');
+    return {ws, inbox, ready};
+  }
+  async function enrolled() {
+    const phone = await pair();
+    return {...phone, ...await connect(phone.deviceToken)};
+  }
+  async function challenge(phone, operation = {recipientId: 'alex', amountCents: 1234, note: 'Lunch ☕'}) {
+    const result = await request('/api/challenges', {method: 'POST', cookie: phone.cookie, body: operation});
+    assert.equal(result.status, 200);
+    assert.equal(result.data.status, 'waiting_phone');
+    return result.data.challenge;
+  }
+  const complete = (phone, challenge, changes = {}) => request(`/api/challenges/${challenge.id}/complete`,
+    {method: 'POST', cookie: phone.cookie, body: {signature: proof(phone.pair, challenge), ...changes}});
+  const get = (phone, challenge) => request(`/api/challenges/${challenge.id}`, {cookie: phone.cookie});
+  return {app, base, request, login, pair, connect, enrolled, challenge, complete, get,
+    advance: (ms) => { time += ms; }, time: () => time};
+}
+
+async function rejectUpgrade(base, route, headers, expected) {
+  const ws = new WebSocket(base.replace('http:', 'ws:') + route, {headers});
+  ws.on('error', () => {});
+  const result = await new Promise((resolve, reject) => {
+    ws.on('open', () => { ws.terminate(); reject(new Error('Upgrade unexpectedly accepted')); });
+    ws.on('unexpected-response', (_req, res) => { res.resume(); resolve(res.statusCode); });
+    ws.on('error', reject);
+  });
+  ws.terminate();
+  assert.equal(result, expected);
+}
+
+function streamedPost(base, route, cookie, firstChunk) {
+  const url = new URL(base + route);
+  let req;
+  const result = new Promise((resolve, reject) => {
+    req = http.request(url, {method: 'POST', headers: {Origin: ORIGIN, Cookie: cookie,
+      'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked'}}, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({status: res.statusCode, data: JSON.parse(Buffer.concat(chunks))}));
+    });
+    req.on('error', reject);
+    req.write(firstChunk);
+  });
+  return {req, result};
+}
+
+const waitTurn = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+test('wire texts, real DER signatures and canonical SPKI enforce the shared contract', () => {
+  assert.equal(approvalText('id', 'nonce'), 'NEARKEY-PASSIVE-V1\nid\nnonce');
+  assert.equal(enrollmentText('code', 'key'), 'NEARKEY-ENROLL-V1\ncode\nkey');
+  const pair = keyPair();
+  assert.equal(parsePublicKey(pair.encoded).asymmetricKeyDetails.namedCurve, 'prime256v1');
+  assert.ok(parseSignature(signature(pair, 'text')).length <= 72);
+  assert.throws(() => parseSignature(signature(pair, 'text', 'ieee-p1363')));
+  assert.throws(() => parseSignature(Buffer.from([0x30, 6, 2, 1, 0, 2, 1, 1]).toString('base64url')));
+  assert.throws(() => parseSignature(Buffer.from([0x30, 7, 2, 2, 0, 1, 2, 1, 1]).toString('base64url')));
+});
+
+test('password fixture, HttpOnly Strict cookie, same-origin/CSRF and session-only account', async (t) => {
+  const f = await fixture(t);
+  assert.deepEqual((await f.request('/api/session')).data, {authenticated: false, user: null});
+  assert.equal((await f.request('/api/account')).status, 401);
+  const body = {username: 'demo', password: 'wrong'};
+  assert.equal((await f.request('/api/login', {method: 'POST', body})).status, 401);
+  for (const origin of ['', 'https://evil.example', 'null']) {
+    assert.equal((await f.request('/api/login', {method: 'POST', body, headers: {Origin: origin}})).status, 403);
+  }
+  assert.equal((await f.request('/api/login', {method: 'POST', body, headers: {'Sec-Fetch-Site': 'cross-site'}})).status, 403);
+  const login = await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}});
+  assert.equal(login.status, 200);
+  assert.match(login.headers.get('set-cookie'), /HttpOnly; SameSite=Strict; Max-Age=28800/);
+  assert.ok(!login.headers.get('set-cookie').includes('Secure'));
+  assert.deepEqual(Object.keys(login.data), ['user']);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await f.request('/api/session', {cookie})).data.authenticated, true);
+  const account = await f.request('/api/account', {cookie});
+  assert.equal(account.data.balanceCents, 100000);
+  assert.deepEqual(account.data.recipients, [{id: 'alex', name: 'Alex Morgan'}, {id: 'sam', name: 'Sam Rivera'}]);
+  assert.equal(account.data.phone, null);
+  assert.equal((await f.request('/api/account', {cookie, headers: {Origin: 'https://evil.example'}})).status, 403);
+  assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie, headers: {Origin: ''}})).status, 403);
+  assert.equal((await f.request('/api/account', {headers: {Cookie: `${cookie}; ${cookie}`}})).status, 401);
+});
+
+test('configuration rejects unsafe origins and sets Secure on HTTPS sessions', async (t) => {
+  for (const value of ['http://192.168.1.2:5173', 'https://bank.example/path', 'https://bank.example/',
+    'https://user:password@bank.example', 'file:///tmp', 'http://localhost.evil']) assert.throws(() => validateOrigin(value));
+  assert.equal(validateOrigin('http://[::1]:5173'), 'http://[::1]:5173');
+  const f = await fixture(t, {publicOrigin: 'https://bank.example'});
+  const result = await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'},
+    headers: {Origin: 'https://bank.example'}});
+  assert.equal(result.status, 200);
+  assert.match(result.headers.get('set-cookie'), /; Secure$/);
+});
+
+test('trusted pairing validates real proof, canonical curve/key and bounded labels', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.login();
+  const pairing = (await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).data;
+  assert.equal(pairing.expiresAt, f.time() + 300000);
+  assert.equal(Buffer.from(pairing.pairingCode, 'base64url').length, 32);
+  const pair = keyPair();
+  const body = {pairingCode: pairing.pairingCode, publicKey: pair.encoded, label: 'Pixel',
+    signature: signature(pair, enrollmentText(pairing.pairingCode, pair.encoded))};
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: {...body,
+    signature: signature(keyPair(), enrollmentText(body.pairingCode, body.publicKey))}})).status, 400);
+  for (const publicKey of [pair.encoded + '=', '!', keyPair('secp384r1').encoded,
+    generateKeyPairSync('ed25519').publicKey.export({format: 'der', type: 'spki'}).toString('base64url'),
+    Buffer.concat([Buffer.from(pair.encoded, 'base64url'), Buffer.from([0])]).toString('base64url')]) {
+    assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: {...body, publicKey}})).status, 400);
+  }
+  for (const label of ['', 'x'.repeat(41)]) {
+    assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: {...body, label}})).status, 400);
+  }
+  f.advance(60001); // reset the credential attempt budget without expiring pairing
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body})).status, 200);
+});
+
+test('pairing is single-use, session-bound and cannot replace an existing phone', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.pair();
+  assert.equal(Buffer.from(phone.deviceToken, 'base64url').length, 32);
+  assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie: phone.cookie})).status, 409);
+  const otherSession = await f.login();
+  assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie: otherSession})).status, 409);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: phone.enrollment})).status, 409);
+  assert.equal((await f.request('/api/phones/' + phone.phoneId, {method: 'DELETE', cookie: phone.cookie})).status, 404);
+  assert.equal((await f.request('/api/account', {token: phone.deviceToken})).status, 401);
+  assert.equal((await f.request('/api/challenges', {method: 'POST', token: phone.deviceToken,
+    body: {recipientId: 'alex', amountCents: 1, note: ''}, headers: {origin: ORIGIN}})).status, 401);
+});
+
+test('superseded/expired/logout pairing codes and wrong enrollment domains cannot enroll', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.login();
+  const old = (await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).data;
+  const current = (await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).data;
+  const pair = keyPair();
+  const bodyFor = (code) => ({pairingCode: code, publicKey: pair.encoded, label: 'Pixel',
+    signature: signature(pair, enrollmentText(code, pair.encoded))});
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: bodyFor(old.pairingCode)})).status, 401);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: {...bodyFor(current.pairingCode),
+    signature: signature(pair, approvalText(current.pairingId, current.pairingCode))}})).status, 400);
+  f.advance(300000);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: bodyFor(current.pairingCode)})).status, 401);
+  const last = (await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).data;
+  await f.request('/api/logout', {method: 'POST', body: {}, cookie});
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: bodyFor(last.pairingCode)})).status, 401);
+});
+
+test('full HTTP/WS/DER happy path, readiness, immutable metadata and credential non-leakage', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  assert.deepEqual(phone.ready, {type: 'ready', phoneId: phone.phoneId});
+  const challenge = await f.challenge(phone);
+  assert.equal(challenge.v, 1);
+  assert.equal(challenge.phoneId, phone.phoneId);
+  assert.equal(challenge.expiresAt, f.time() + CHALLENGE_TTL_MS);
+  assert.equal(Buffer.from(challenge.nonce, 'base64url').length, 32);
+  const delivered = await phone.inbox.next();
+  assert.deepEqual(delivered, {type: 'challenge', challenge});
+  const before = (await f.get(phone, challenge)).data;
+  assert.equal(before.phoneReady, false);
+  const ready = await f.request(`/api/phone/challenges/${challenge.id}/ready`, {method: 'POST', token: phone.deviceToken, body: {}});
+  assert.equal(ready.status, 200);
+  const after = (await f.get(phone, challenge)).data;
+  assert.equal(after.phoneReady, true);
+  assert.equal(after.status, 'waiting_bluetooth');
+  assert.equal(after.challenge.expiresAt, challenge.expiresAt);
+  const result = await f.complete(phone, challenge);
+  assert.equal(result.status, 200);
+  assert.equal(result.data.status, 'approved');
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
+  assert.deepEqual({...result.data.receipt, id: undefined, createdAt: undefined}, {...challenge.operation, id: undefined, createdAt: undefined});
+  const account = (await f.request('/api/account', {cookie: phone.cookie})).data;
+  assert.equal(account.balanceCents, 98766);
+  assert.equal(account.transactions.length, 1);
+  assert.deepEqual(account.phone, {id: phone.phoneId, label: 'Android phone', online: true});
+  assert.equal((await f.get(phone, challenge)).data.status, 'approved');
+  for (const exposed of [account, delivered, phone.ready, challenge, result.data]) {
+    const text = JSON.stringify(exposed);
+    assert.ok(!text.includes(phone.deviceToken));
+    assert.ok(!text.includes(phone.pair.encoded));
+    assert.ok(!text.includes('deviceToken'));
+  }
+  assert.equal((await f.request(`/api/phone/challenges/${challenge.id}/ready`, {method: 'POST', token: phone.deviceToken, body: {}})).status, 409);
+});
+
+test('one creating session exclusively owns read/cancel/complete, not phone bearer', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  const cookie = await f.login();
+  assert.equal((await f.request(`/api/challenges/${challenge.id}`, {cookie})).status, 404);
+  for (const action of ['complete', 'cancel']) {
+    assert.equal((await f.request(`/api/challenges/${challenge.id}/${action}`, {method: 'POST', cookie,
+      body: action === 'complete' ? {signature: proof(phone.pair, challenge)} : {}})).status, 404);
+  }
+  assert.equal((await f.request(`/api/phone/challenges/${challenge.id}/ready`, {method: 'POST', cookie: phone.cookie, body: {}})).status, 403);
+  assert.equal((await f.complete(phone, challenge)).status, 200);
+});
+
+test('wrong real key/nonce/id/domain and tampered metadata never authorize', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  for (const bad of [proof(keyPair(), challenge), proof(phone.pair, {...challenge, nonce: 'wrong'}),
+    proof(phone.pair, {...challenge, id: 'wrong'}), signature(phone.pair, `NEARKEY-PASSIVE-V1\r\n${challenge.id}\r\n${challenge.nonce}`)]) {
+    assert.equal((await f.complete(phone, challenge, {signature: bad})).status, 403);
+  }
+  for (const extra of [{nonce: challenge.nonce}, {phoneId: phone.phoneId}, {publicKey: phone.pair.encoded},
+    {amountCents: 1}, {note: 'changed'}, {operation: {amountCents: 1}}]) {
+    assert.equal((await f.complete(phone, challenge, extra)).status, 400);
+  }
+  const local = structuredClone(challenge);
+  local.operation.amountCents = 1;
+  local.operation.note = 'Attacker changed view';
+  const result = await f.complete(phone, local);
+  assert.equal(result.status, 200);
+  assert.equal(result.data.receipt.amountCents, 1234);
+  assert.equal(result.data.receipt.note, 'Lunch ☕');
+});
+
+test('malformed signature encodings, non-DER and trailing bytes reject without debit', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  const valid = proof(phone.pair, challenge);
+  const trailing = Buffer.concat([Buffer.from(valid, 'base64url'), Buffer.from([0])]).toString('base64url');
+  for (const bad of ['', '!', valid + '=', valid.replace(/./, '+'), null, 42, {}, 'A'.repeat(1000), trailing,
+    signature(phone.pair, approvalText(challenge.id, challenge.nonce), 'ieee-p1363'),
+    Buffer.from([0x30, 6, 2, 1, 0x80, 2, 1, 1]).toString('base64url')]) {
+    assert.equal((await f.complete(phone, challenge, {signature: bad})).status, 400);
+  }
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.balanceCents, 100000);
+  assert.equal((await f.complete(phone, challenge)).status, 200);
+});
+
+test('concurrent completion and replay debit exactly once, new challenge rejects old proof', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  const results = await Promise.all([f.complete(phone, challenge), f.complete(phone, challenge), f.complete(phone, challenge)]);
+  assert.deepEqual(results.map((item) => item.status).sort(), [200, 409, 409]);
+  assert.equal((await f.complete(phone, challenge)).status, 409);
+  const next = await f.challenge(phone);
+  assert.equal((await f.complete(phone, next, {signature: proof(phone.pair, challenge)})).status, 403);
+  const account = (await f.request('/api/account', {cookie: phone.cookie})).data;
+  assert.equal(account.balanceCents, 98766);
+  assert.equal(account.transactions.length, 1);
+});
+
+test('cancel and displaced request notify phone and invalidate signatures', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const old = await f.challenge(phone);
+  await phone.inbox.next();
+  const current = await f.challenge(phone);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: old.id});
+  assert.deepEqual(await phone.inbox.next(), {type: 'challenge', challenge: current});
+  assert.equal((await f.get(phone, old)).data.status, 'cancelled');
+  assert.equal((await f.complete(phone, old)).status, 409);
+  assert.equal((await f.request(`/api/challenges/${current.id}/cancel`, {method: 'POST', cookie: phone.cookie, body: {}})).status, 200);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: current.id});
+  assert.equal((await f.complete(phone, current)).status, 409);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.balanceCents, 100000);
+});
+
+test('absolute expiry cancels via maintenance timer, never extended by phone-ready', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  await phone.inbox.next();
+  f.advance(59999);
+  assert.equal((await f.request(`/api/phone/challenges/${challenge.id}/ready`, {method: 'POST', token: phone.deviceToken, body: {}})).status, 200);
+  assert.equal((await f.get(phone, challenge)).data.challenge.expiresAt, challenge.expiresAt);
+  f.advance(1);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
+  assert.equal((await f.get(phone, challenge)).data.status, 'expired');
+  assert.equal((await f.complete(phone, challenge)).status, 409);
+  assert.equal((await f.request(`/api/phone/challenges/${challenge.id}/ready`, {method: 'POST', token: phone.deviceToken, body: {}})).status, 409);
+});
+
+test('logout revokes session and cancels pending phone without exposing/removing its credential', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  await phone.inbox.next();
+  const loggedOut = await f.request('/api/logout', {method: 'POST', cookie: phone.cookie, body: {}});
+  assert.equal(loggedOut.status, 200);
+  assert.match(loggedOut.headers.get('set-cookie'), /Max-Age=0/);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
+  assert.equal((await f.complete(phone, challenge)).status, 401);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.authenticated, false);
+  const cookie = await f.login();
+  assert.equal((await f.request('/api/pairing', {method: 'POST', cookie, body: {}})).status, 409);
+  assert.equal((await f.request('/api/account', {cookie})).data.balanceCents, 100000);
+});
+
+test('expiry/logout during asynchronous body upload is rechecked before committing', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  let challenge = await f.challenge(phone);
+  const upload = streamedPost(f.base, `/api/challenges/${challenge.id}/complete`, phone.cookie, '{"signature":"');
+  await waitTurn();
+  f.advance(60000);
+  upload.req.end(proof(phone.pair, challenge) + '"}');
+  assert.equal((await upload.result).status, 409);
+  challenge = await f.challenge(phone);
+  const second = streamedPost(f.base, `/api/challenges/${challenge.id}/complete`, phone.cookie, '{"signature":"');
+  await waitTurn();
+  await f.request('/api/logout', {method: 'POST', cookie: phone.cookie, body: {}});
+  second.req.end(proof(phone.pair, challenge) + '"}');
+  assert.equal((await second.result).status, 401);
+  const cookie = await f.login();
+  const account = (await f.request('/api/account', {cookie})).data;
+  assert.equal(account.balanceCents, 100000);
+  assert.equal(account.transactions.length, 0);
+});
+
+test('session expiration and login rotation cancel original-session work', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  await phone.inbox.next();
+  const rotated = await f.request('/api/login', {method: 'POST', cookie: phone.cookie,
+    body: {username: 'demo', password: 'demo-passive-key'}});
+  assert.equal(rotated.status, 200);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
+  assert.equal((await f.complete(phone, challenge)).status, 401);
+  phone.cookie = rotated.headers.get('set-cookie').split(';')[0];
+  const next = await f.challenge(phone);
+  await phone.inbox.next();
+  f.advance(8 * 60 * 60000);
+  assert.equal((await f.request('/api/session', {cookie: phone.cookie})).data.authenticated, false);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: next.id});
+  assert.equal((await f.complete(phone, next)).status, 401);
+});
+
+test('disconnect/reconnect only resends live challenge, resets readiness and keeps deadline', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  await phone.inbox.next();
+  await f.request(`/api/phone/challenges/${challenge.id}/ready`, {method: 'POST', token: phone.deviceToken, body: {}});
+  const closed = once(phone.ws, 'close');
+  phone.ws.close();
+  await closed;
+  await waitTurn();
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.phone.online, false);
+  assert.equal((await f.get(phone, challenge)).data.phoneReady, false);
+  assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie,
+    body: {recipientId: 'sam', amountCents: 1, note: ''}})).status, 409);
+  f.advance(1000);
+  const connection = await f.connect(phone.deviceToken);
+  assert.deepEqual(await connection.inbox.next(), {type: 'challenge', challenge});
+  assert.equal((await f.get(phone, challenge)).data.status, 'waiting_phone');
+  assert.equal((await f.get(phone, challenge)).data.challenge.expiresAt, challenge.expiresAt);
+  assert.equal((await f.complete(phone, challenge)).status, 200);
+  await connection.inbox.next();
+  const closeAgain = once(connection.ws, 'close');
+  connection.ws.close();
+  await closeAgain;
+  const after = await f.connect(phone.deviceToken);
+  await waitTurn();
+  assert.deepEqual(after.inbox.messages, []);
+});
+
+test('channel displacement cancels old peer and replays only live server state to new peer', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  await phone.inbox.next();
+  const oldClose = once(phone.ws, 'close');
+  const fresh = await f.connect(phone.deviceToken);
+  assert.deepEqual(await phone.inbox.next(), {type: 'cancel', challengeId: challenge.id});
+  await oldClose;
+  assert.deepEqual(await fresh.inbox.next(), {type: 'challenge', challenge});
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.phone.online, true);
+});
+
+test('phone WebSocket requires header only, correct path, no browser Origin or query credentials', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.pair();
+  for (const [route, headers, status] of [
+    ['/api/phone-channel', {}, 401],
+    ['/api/phone-channel', {Cookie: phone.cookie}, 401],
+    ['/api/phone-channel', {Authorization: 'Bearer wrong'}, 401],
+    ['/api/phone-channel?deviceToken=' + phone.deviceToken, {}, 403],
+    ['/wrong', {Authorization: `Bearer ${phone.deviceToken}`}, 403],
+    ['/api/phone-channel', {Authorization: `Bearer ${phone.deviceToken}`, Origin: 'https://evil.example'}, 403],
+    ['/api/phone-channel', {Authorization: `Bearer ${phone.deviceToken}`, Origin: ORIGIN}, 403],
+  ]) await rejectUpgrade(f.base, route, headers, status);
+  const connected = await f.connect(phone.deviceToken);
+  connected.ws.send(JSON.stringify({type: 'ping'}));
+  await waitTurn();
+  assert.equal(connected.ws.readyState, WebSocket.OPEN);
+});
+
+test('WS rejects malformed/control/binary/oversized payloads and message flooding', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.pair();
+  for (const [message, code] of [['{', 1008], ['{"type":"approve"}', 1008],
+    ['{"type":"ping","extra":true}', 1008], [Buffer.from('{"type":"ping"}'), 1008], ['x'.repeat(2049), 1009]]) {
+    const connection = await f.connect(phone.deviceToken);
+    const closed = once(connection.ws, 'close');
+    connection.ws.send(message);
+    const result = await closed;
+    assert.equal(result[0], code);
+  }
+  const connection = await f.connect(phone.deviceToken);
+  const closed = once(connection.ws, 'close');
+  for (let i = 0; i < 61; i++) connection.ws.send('{"type":"ping"}');
+  assert.equal((await closed)[0], 1008);
+});
+
+test('bad amounts, recipient, note and metadata cannot create a transfer or disturb live operation', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  const challenge = await f.challenge(phone);
+  for (const amountCents of [0, -1, 1.2, '1', null, 100001, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie,
+      body: {recipientId: 'alex', amountCents, note: ''}})).status, 400);
+  }
+  for (const patch of [{recipientId: 'unknown'}, {note: 'x'.repeat(121)}, {note: null}, {extra: true}]) {
+    assert.equal((await f.request('/api/challenges', {method: 'POST', cookie: phone.cookie,
+      body: {recipientId: 'alex', amountCents: 1, note: '', ...patch}})).status, 400);
+  }
+  assert.equal((await f.get(phone, challenge)).data.status, 'waiting_phone');
+  assert.equal((await f.complete(phone, challenge)).status, 200);
+});
+
+test('JSON errors, UTF-8/shape/content encoding and content-length/chunked body bounds', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.login();
+  for (const [body, headers, expected] of [['{', {}, 400], ['[]', {}, 400], ['null', {}, 400],
+    ['{}', {'Content-Type': 'text/plain'}, 415], ['{}', {'Content-Encoding': 'gzip'}, 415],
+    [' '.repeat(4097), {}, 413], [{extra: true}, {}, 400]]) {
+    const result = await f.request('/api/pairing', {method: 'POST', cookie, body, headers});
+    assert.equal(result.status, expected);
+    assert.deepEqual(Object.keys(result.data), ['error', 'message']);
+    assert.ok(!JSON.stringify(result.data).includes('stack'));
+  }
+  const upload = streamedPost(f.base, '/api/pairing', cookie, ' '.repeat(4097));
+  upload.req.end();
+  assert.equal((await upload.result).status, 413);
+  const malformed = streamedPost(f.base, '/api/pairing', cookie, Buffer.from([0xff]));
+  malformed.req.end();
+  assert.equal((await malformed.result).status, 400);
+  assert.equal((await f.request('/api/account?deviceToken=secret', {cookie})).status, 400);
+});
+
+test('credential and general address rate limits return bounded useful errors', async (t) => {
+  const f = await fixture(t);
+  for (let i = 0; i < 10; i++) {
+    assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'wrong'}})).status, 401);
+  }
+  const blocked = await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}});
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.headers.get('retry-after'), '60');
+  f.advance(60000);
+  await f.login();
+  for (let i = 0; i < 239; i++) assert.equal((await f.request('/api/session')).status, 200);
+  assert.equal((await f.request('/api/session')).status, 429);
+  f.advance(60000);
+  assert.equal((await f.request('/api/session')).status, 200);
+});
+
+test('bounded session and challenge histories with account-wide single pending request', async (t) => {
+  const f = await fixture(t);
+  for (let i = 0; i < 16; i++) {
+    if (i === 9) f.advance(60001);
+    await f.login();
+  }
+  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}})).status, 429);
+  f.advance(8 * 60 * 60000);
+  const phone = await f.enrolled();
+  const first = await f.challenge(phone);
+  for (let i = 0; i < 100; i++) await f.challenge(phone, {recipientId: 'sam', amountCents: 1, note: ''});
+  assert.equal((await f.get(phone, first)).status, 404);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.balanceCents, 100000);
+});
+
+test('serves explicit web inventory and shared module, not traversal, source files or symlinks', async (t) => {
+  const root = fileURLToPath(new URL('./fixtures/static/', import.meta.url));
+  const f = await fixture(t, {root});
+  assert.match((await f.request('/')).data, /NearKey/);
+  assert.match((await f.request('/web/styles.css')).data, /demo/);
+  assert.equal((await f.request('/styles.css')).status, 200);
+  assert.match((await f.request('/shared/protocol.mjs')).data, /NEARKEY-PASSIVE-V1/);
+  for (const route of ['/web/leak.css', '/server/app.mjs', '/shared/PROTOCOL.md', '/secret.txt', '/web/%2e%2e/secret.txt']) {
+    assert.equal((await f.request(route)).status, 404);
+  }
+});
