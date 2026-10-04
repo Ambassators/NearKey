@@ -17,6 +17,8 @@ void import('./key-toss.mjs').then(({KeyToss}) => {
 }).catch(() => {});
 const enrollmentQr = new EnrollmentQr({container: $('pair-qr'), message: $('pair-instruction'),
   codeInput: $('pair-code'), originInput: $('base-url'), manual: $('pair-manual')});
+const replacementQr = new EnrollmentQr({container: $('replacement-qr'), message: $('replacement-instruction'),
+  codeInput: $('replacement-code'), originInput: $('replacement-origin'), manual: $('replacement-manual')});
 let session = null;
 let account = null;
 let pairing = null;
@@ -28,9 +30,17 @@ let pairBusy = false;
 let challengeBusy = false;
 let chooserBusy = false;
 let autoAttempted = false;
-let activityKey = '';
+let appsKey = '';
+let appBusy = false;
+let appOpener = null;
+let accountRevision = 0;
+let replacementPairing = null;
+let replacementBusy = false;
+let replacementRequested = false;
 let openingDashboard = false;
 let currentVerification = null;
+let restoringSession = true;
+let visiblePage = null;
 const pendingStatuses = new Set(['waiting_phone', 'waiting_bluetooth']);
 const challengeTitles = {
   waiting: 'Checking your phone key.',
@@ -102,6 +112,8 @@ function renderDebug() {
     : bluetooth.device?.gatt?.connected ? 'Phone link connected'
     : bluetooth.busy ? 'Browser operation in progress'
     : bluetooth.deviceId ? 'Phone permitted · link disconnected' : 'No phone permission yet';
+  const idleStage = !session?.pending ? 'Ready' : !phone ? 'Waiting for phone enrollment'
+    : phone.online ? 'Ready to verify' : 'Waiting for phone to come online';
   let stage = challengeBusy ? 'Requesting login challenge' : pairing ? 'Waiting for QR enrollment'
     : chooserBusy ? diagnostics.transport === 'Idle' ? 'Choosing phone' : diagnostics.transport : state ? {
       waiting: state.phoneReady ? 'Phone advertising' : 'Waiting for phone advertisement',
@@ -109,7 +121,7 @@ function renderDebug() {
       submitting: 'Server verifying signature',
       reconnect: 'Reconnect needed', approved: 'Login verified', expired: 'Challenge expired',
       cancelled: 'Verification cancelled', failed: 'Verification failed',
-    }[state.phase] : 'Ready';
+    }[state.phase] : idleStage;
   $('debug-stage').textContent = stage || 'Ready';
   observeDebug('stage', stage, `Stage: ${stage}`);
   if (state && diagnostics.challenge !== state.challenge.id) {
@@ -134,13 +146,24 @@ function resetLifetime() {
   flow.dispose();
   pairing = null;
   enrollmentQr.clear();
+  replacementQr.clear();
+  replacementPairing = null;
+  replacementBusy = replacementRequested = false;
+  $('replace-phone-dialog').close();
+  $('replacement-qr-dialog').close();
   session = account = null;
-  pairBusy = challengeBusy = chooserBusy = false;
+  pairBusy = challengeBusy = chooserBusy = appBusy = false;
   autoAttempted = openingDashboard = false;
-  activityKey = '';
+  appsKey = '';
+  accountRevision++;
+  $('app-dialog').close();
+  $('app-form').reset();
+  $('app-form-error').hidden = true;
+  appOpener = null;
   currentVerification = null;
   diagnostics.challenge = diagnostics.startedAt = diagnostics.endedAt = null;
   diagnostics.transport = 'Idle';
+  restoringSession = false;
 }
 
 function signOutLocally() {
@@ -154,7 +177,77 @@ function signOutLocally() {
 
 function handleError(error) {
   if (error.status === 401) return flow.onSessionLost();
+  if (error.code === 'verification_required') return void resumeSetup();
   notice(error.message);
+}
+
+async function resumeSetup() {
+  const currentEpoch = epoch;
+  try {
+    const result = await api('/api/session', {signal: lifetime.signal});
+    if (epoch !== currentEpoch || result.authenticated) return;
+    const changedPhone = account?.phone?.id && result.setup?.phone?.id !== account.phone.id;
+    if (changedPhone) bluetooth.forget();
+    resetLifetime();
+    await acceptSession(result);
+    notice(result.pending ? changedPhone ? 'New phone enrolled. Verify it nearby to finish connecting it.'
+      : 'Finish phone verification to return to your apps.' : 'Sign in to return to your apps.');
+  } catch (error) {
+    if (epoch === currentEpoch) handleError(error);
+  }
+}
+
+// Routes describe server-confirmed access; changing a URL never grants a factor.
+function renderPage(pending) {
+  const page = restoringSession ? 'loading' : account ? 'dashboard' : pending ? 'loading' : 'login';
+  $('login-view').hidden = page !== 'login';
+  $('auth-view').hidden = page !== 'loading';
+  $('dashboard-view').hidden = page !== 'dashboard';
+  document.title = `Nearkey — ${page === 'login' ? 'Set up your account' : page === 'loading' ? 'Set up your phone' : 'Your apps'}`;
+  if (!restoringSession) {
+    // Dashboard section anchors remain available once both factors are verified.
+    const section = page === 'dashboard' && ['#overview', '#activity', '#how-it-works'].includes(location.hash);
+    const route = `#/${page}`;
+    if (!section && location.hash !== route) history.replaceState(null, '', `${location.pathname}${location.search}${route}`);
+  }
+  const state = flow.state;
+  const phone = session?.setup?.phone;
+  let title = 'Set up your phone key.';
+  let summary = 'Scan the setup QR code, then tap “Enroll phone” in the Android app to continue to step 3.';
+  if (phone) {
+    title = phone.online ? 'Verifying your sign-in.' : 'Waiting for your phone.';
+    summary = phone.online ? 'Keep your Android app open and your phone nearby while we verify your second factor.'
+      : 'Open the Nearkey Android app to reconnect your phone and continue verification.';
+  }
+  if (state) {
+    title = challengeTitles[state.phase] || 'Verifying your sign-in.';
+    summary = state.message || summary;
+  }
+  if (replacementRequested && pending) {
+    summary = 'Verify your current phone first. Then we’ll show a setup QR code for your new phone.';
+  }
+  if (restoringSession) {
+    title = 'Checking your session…';
+    summary = 'Checking where to resume your sign-in.';
+  }
+  $('auth-view').dataset.stage = restoringSession ? 'restoring' : state?.phase || 'setup';
+  $('auth-page-title').textContent = title;
+  $('auth-page-summary').textContent = summary;
+  const step = account ? 4 : restoringSession ? 0 : !pending ? 1 : phone ? 3 : 2;
+  ['account', 'enroll', 'verify', 'ready'].forEach((name, index) => {
+    const item = $(`wizard-${name}-step`);
+    item.className = index + 1 < step ? 'complete' : index + 1 === step ? 'active' : '';
+    if (index + 1 === step) item.setAttribute('aria-current', 'step');
+    else item.removeAttribute('aria-current');
+  });
+  $('wizard-step-label').textContent = restoringSession ? 'SETUP / CHECKING YOUR SESSION'
+    : `STEP ${step} / ${['', 'ACCOUNT', 'ENROLL YOUR PHONE', 'VERIFY NEARBY PHONE', 'READY'][step]}`;
+  $('auth-spinner').hidden = !(restoringSession || openingDashboard || challengeBusy
+    || flow.run && ['waiting', 'connecting', 'submitting'].includes(state?.phase));
+  if (visiblePage !== page) {
+    visiblePage = page;
+    $(page === 'login' ? 'login-title' : page === 'loading' ? 'auth-page-title' : 'dashboard-title').focus({preventScroll: true});
+  }
 }
 
 // Rendering keeps account access separate from pending phone setup.
@@ -164,8 +257,7 @@ function renderControls() {
   const running = !!flow.run;
   const problem = bluetooth.availability();
   const pending = session?.pending === true;
-  $('login-view').hidden = !!account;
-  $('dashboard-view').hidden = !account;
+  renderPage(pending);
   $('logout').hidden = !session?.pending && !account;
   $('credentials-panel').hidden = pending;
   $('factor-panel').hidden = !pending;
@@ -197,6 +289,16 @@ function renderControls() {
   $('back-button').disabled = loginBusy;
   $('bluetooth-problem').hidden = !problem;
   $('bluetooth-problem').textContent = problem || '';
+  $('add-app-button').disabled = $('add-app-plus').disabled = !account || appBusy;
+  $('app-save').disabled = $('app-name').disabled = $('app-url').disabled = appBusy;
+  $('app-dialog-close').disabled = appBusy;
+  $('replace-phone-button').hidden = !pending || !phone;
+  $('replace-phone-button').disabled = chooserBusy || bluetooth.busy || replacementBusy;
+  $('dashboard-replace-phone-button').disabled = !account || appBusy || replacementBusy;
+  $('replace-phone-confirm').disabled = $('replace-phone-close').disabled = replacementBusy;
+  $('replacement-refresh').disabled = $('replacement-cancel').disabled = replacementBusy;
+  replacementQr.render(account ? replacementPairing : null, location.origin);
+  $('app-save').firstChild.textContent = appBusy ? 'Saving app… ' : 'Save app ';
   renderDebug();
 }
 
@@ -208,7 +310,7 @@ function renderSession() {
     $('base-url').value = '';
     notice('Phone enrolled. Keep its app open and nearby to finish your sign-in.');
   }
-  $('factor-title').innerHTML = phone ? 'One more step.<br>Keep your phone close.' : 'Meet your new<br>second factor.';
+  $('factor-title').textContent = phone ? 'Keep your phone nearby.' : 'Scan to enroll your phone.';
   $('phone-description').textContent = phone
     ? 'Your password is verified. Your enrolled phone must sign this login before your workspace opens.'
     : 'Enroll your Android phone first. Then verify it nearby over Bluetooth to finish signing in.';
@@ -226,30 +328,24 @@ function dateLabel(value) {
   return Number.isNaN(date.getTime()) ? 'Verified in this session' : date.toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
 }
 
-function icon(symbol) {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('aria-hidden', 'true');
-  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  use.setAttribute('href', `#icon-${symbol}`);
-  svg.append(use);
-  return svg;
-}
-
-function activityItem(event) {
+function appItem(app) {
   const item = document.createElement('li');
+  item.className = 'site-card';
   const symbol = document.createElement('span');
-  symbol.className = 'activity-icon';
-  symbol.append(icon('shield'));
+  symbol.className = 'site-icon';
+  symbol.setAttribute('aria-hidden', 'true');
+  symbol.textContent = [...app.name][0]?.toUpperCase() || '+';
   const description = document.createElement('div');
+  description.className = 'site-info';
   const title = document.createElement('strong');
-  title.textContent = `${event.serviceName || 'Nearkey'} sign-in verified`;
+  title.textContent = app.name;
   const subtitle = document.createElement('small');
-  subtitle.textContent = `${dateLabel(event.verifiedAt || event.createdAt)} · ${event.phoneLabel || 'Enrolled phone'}`;
+  subtitle.textContent = app.url ? new URL(app.url).host : 'Saved to your app list';
   description.append(title, subtitle);
-  const proof = document.createElement('span');
-  proof.className = 'activity-proof';
-  proof.textContent = 'Bluetooth 2FA';
-  item.append(symbol, description, proof);
+  const status = document.createElement('span');
+  status.className = 'site-status';
+  status.textContent = 'Added';
+  item.append(symbol, description, status);
   return item;
 }
 
@@ -259,14 +355,15 @@ function renderAccount() {
   $('dashboard-phone-name').textContent = account.phone?.label || 'Phone key';
   $('dashboard-phone-status').textContent = account.phone?.online ? 'Online' : 'Enrolled';
   $('dashboard-phone-detail').textContent = account.phone?.online ? 'Connected to Nearkey' : 'Open the app for your next sign-in';
-  const activity = [...(account.activity || [])].sort((a, b) => new Date(b.verifiedAt) - new Date(a.verifiedAt));
+  const apps = account.apps || [];
   $('session-time').textContent = currentVerification ? `Verified ${dateLabel(currentVerification)}.` : 'Both factors verified for this session.';
-  const nextKey = JSON.stringify(activity);
-  if (activityKey !== nextKey) {
-    activityKey = nextKey;
-    $('activity-list').replaceChildren(...activity.slice(0, 4).map(activityItem));
+  const nextKey = JSON.stringify(apps);
+  if (appsKey !== nextKey) {
+    appsKey = nextKey;
+    $('connected-sites').replaceChildren(...apps.map(appItem));
   }
-  $('no-activity').hidden = activity.length > 0;
+  $('site-count').textContent = `${apps.length} app${apps.length === 1 ? '' : 's'}`;
+  $('no-connected-sites').hidden = apps.length > 0;
   renderControls();
 }
 
@@ -287,6 +384,10 @@ async function enterDashboard() {
     renderAccount();
     $('dashboard-title').focus({preventScroll: true});
     schedulePoll(currentEpoch);
+    if (replacementRequested) {
+      replacementRequested = false;
+      void startReplacement();
+    }
   } finally {
     if (epoch === currentEpoch) openingDashboard = false;
   }
@@ -301,8 +402,10 @@ async function poll(currentEpoch) {
   if (epoch !== currentEpoch || !session) return;
   try {
     if (account) {
+      if (appBusy || replacementBusy) return;
+      const revision = accountRevision;
       const result = await api('/api/account', {signal: lifetime.signal});
-      if (epoch !== currentEpoch) return;
+      if (epoch !== currentEpoch || revision !== accountRevision) return;
       account = result;
       renderAccount();
     } else {
@@ -319,6 +422,7 @@ async function poll(currentEpoch) {
   } catch (error) {
     if (epoch !== currentEpoch) return;
     if (error.status === 401) return flow.onSessionLost();
+    if (error.code === 'verification_required') return void resumeSetup();
     notice(`${error.message} Status will retry shortly.`);
   } finally {
     if (epoch === currentEpoch) schedulePoll(currentEpoch);
@@ -348,6 +452,12 @@ function tick() {
     const seconds = Math.max(0, Math.ceil((pairing.expiresAt - Date.now()) / 1000));
     $('pair-time').textContent = seconds ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s. This code enrolls your phone; it does not sign you in.` : 'Code expired. Get a fresh enrollment code to continue.';
   }
+  if (replacementPairing) {
+    const seconds = Math.max(0, Math.ceil((replacementPairing.expiresAt - Date.now()) / 1000));
+    $('replacement-time').textContent = seconds
+      ? `Expires in ${Math.floor(seconds / 60)}m ${seconds % 60}s. Your current phone stays enrolled until the new phone finishes enrollment.`
+      : 'Code expired. Get a new QR code to continue. Your current phone is still enrolled.';
+  }
   renderControls();
 }
 
@@ -366,11 +476,13 @@ async function acceptSession(result) {
       flow.finish(flow.run, result.challengeStatus || 'failed');
     }
   } else if (result.setup?.phone?.online && !bluetooth.availability()) void startChallenge();
+  else if (!result.setup?.phone) void createPairing();
   schedulePoll(epoch);
 }
 
 async function startChallenge() {
-  if (challengeBusy || flow.run || !session?.pending || !session.setup?.phone?.online || account) return;
+  // Polling must not replace a chooser that is still using the native transport.
+  if (challengeBusy || chooserBusy || bluetooth.busy || flow.run || !session?.pending || !session.setup?.phone?.online || account) return;
   const problem = bluetooth.availability();
   if (problem) return notice(problem);
   autoAttempted = true;
@@ -437,7 +549,7 @@ async function logout() {
 $('logout').addEventListener('click', () => void logout());
 $('back-button').addEventListener('click', () => void logout());
 
-$('pair-button').addEventListener('click', async () => {
+async function createPairing() {
   if (pairBusy || !session?.pending || session.setup?.phone) return;
   const currentEpoch = epoch;
   pairBusy = true;
@@ -454,25 +566,173 @@ $('pair-button').addEventListener('click', async () => {
     if (epoch === currentEpoch) pairBusy = false;
     renderControls();
   }
+}
+$('pair-button').addEventListener('click', () => void createPairing());
+
+function openPhoneReplacement() {
+  if (replacementBusy || (!account && !session?.setup?.phone)) return;
+  if (account && replacementPairing) return $('replacement-qr-dialog').showModal();
+  $('replace-phone-error').hidden = true;
+  $('replace-phone-description').textContent = account
+    ? 'Scan a setup QR code with your new phone. Your current phone stays enrolled until the new phone finishes enrollment. Then verify the new phone nearby.'
+    : 'Verify your current phone first to approve this change. Then we’ll show a setup QR code for your new phone. Keep Nearkey open on your current phone.';
+  $('replace-phone-confirm').firstChild.textContent = account ? 'Show new phone QR code ' : 'Verify current phone first ';
+  $('replace-phone-dialog').showModal();
+}
+
+async function startReplacement() {
+  if (!account || replacementBusy) return;
+  const currentEpoch = epoch;
+  replacementBusy = true;
+  accountRevision++;
+  $('replace-phone-error').hidden = true;
+  renderControls();
+  try {
+    const result = await api('/api/phones/replacement', {method: 'POST', body: {}, signal: lifetime.signal});
+    if (epoch !== currentEpoch || !account) return;
+    replacementPairing = result;
+    $('replace-phone-dialog').close();
+    if (!$('replacement-qr-dialog').open) $('replacement-qr-dialog').showModal();
+    tick();
+  } catch (error) {
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401) return flow.onSessionLost();
+    if (error.code === 'verification_required') return void resumeSetup();
+    if ($('replacement-qr-dialog').open) notice(error.message);
+    else {
+      $('replace-phone-error').textContent = error.message;
+      $('replace-phone-error').hidden = false;
+      if (!$('replace-phone-dialog').open) $('replace-phone-dialog').showModal();
+    }
+  } finally {
+    if (epoch === currentEpoch) replacementBusy = false;
+    renderControls();
+  }
+}
+
+async function cancelReplacement() {
+  if (replacementBusy || !account) return;
+  const currentEpoch = epoch;
+  replacementBusy = true;
+  accountRevision++;
+  renderControls();
+  try {
+    await api('/api/phones/replacement/cancel', {method: 'POST', body: {}, signal: lifetime.signal});
+    if (epoch !== currentEpoch) return;
+    replacementPairing = null;
+    replacementQr.clear();
+    $('replacement-qr-dialog').close();
+    notice('Phone change cancelled. Your current phone stays connected.');
+    $('dashboard-replace-phone-button').focus();
+  } catch (error) {
+    if (epoch === currentEpoch) handleError(error);
+  } finally {
+    if (epoch === currentEpoch) replacementBusy = false;
+    renderControls();
+  }
+}
+
+$('replace-phone-button').addEventListener('click', openPhoneReplacement);
+$('dashboard-replace-phone-button').addEventListener('click', openPhoneReplacement);
+$('replace-phone-close').addEventListener('click', () => $('replace-phone-dialog').close());
+$('replace-phone-dialog').addEventListener('cancel', event => {
+  if (replacementBusy) event.preventDefault();
+});
+$('replace-phone-confirm').addEventListener('click', () => {
+  if (replacementBusy) return;
+  if (account) return void startReplacement();
+  replacementRequested = true;
+  $('replace-phone-dialog').close();
+  notice('Verify your current phone first. The new phone QR code will open after verification.');
+  if (!flow.run) {
+    flow.dispose();
+    autoAttempted = false;
+    void startChallenge();
+  }
+  renderControls();
+  $('auth-page-title').focus();
+});
+$('replacement-refresh').addEventListener('click', () => void startReplacement());
+$('replacement-cancel').addEventListener('click', () => void cancelReplacement());
+$('replacement-qr-dialog').addEventListener('cancel', event => {
+  event.preventDefault();
+  void cancelReplacement();
+});
+
+function openAppForm(event) {
+  if (!account || appBusy || $('app-dialog').open) return;
+  $('app-form').reset();
+  $('app-form-error').hidden = true;
+  appOpener = event.currentTarget;
+  $('app-dialog').showModal();
+  $('app-name').focus();
+}
+$('add-app-button').addEventListener('click', openAppForm);
+$('add-app-plus').addEventListener('click', openAppForm);
+$('app-dialog-close').addEventListener('click', () => $('app-dialog').close());
+$('app-dialog').addEventListener('cancel', event => {
+  if (appBusy) event.preventDefault();
+});
+$('app-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!account || appBusy) return;
+  const body = {name: $('app-name').value.trim(), url: $('app-url').value.trim()};
+  if (!body.name) {
+    $('app-form-error').textContent = 'Enter an app name.';
+    $('app-form-error').hidden = false;
+    $('app-name').focus();
+    return;
+  }
+  const currentEpoch = epoch;
+  appBusy = true;
+  // Invalidate account reads already in flight before the save began.
+  accountRevision++;
+  $('app-form-error').hidden = true;
+  renderControls();
+  try {
+    const {app} = await api('/api/apps', {method: 'POST', body, signal: lifetime.signal});
+    if (epoch !== currentEpoch || !account) return;
+    accountRevision++;
+    account = {...account, apps: [...(account.apps || []).filter(item => item.id !== app.id), app]};
+    renderAccount();
+    $('app-dialog').close();
+    $('app-form').reset();
+    notice(`${app.name} added to your app list.`);
+  } catch (error) {
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401) return flow.onSessionLost();
+    if (error.code === 'verification_required') return void resumeSetup();
+    $('app-form-error').textContent = error.message;
+    $('app-form-error').hidden = false;
+  } finally {
+    if (epoch === currentEpoch) appBusy = false;
+    renderControls();
+    if (epoch === currentEpoch && account) {
+      if (!$('app-dialog').open) appOpener?.focus();
+      else $('app-name').focus();
+    }
+  }
 });
 
 $('choose-button').addEventListener('click', async () => {
   if (chooserBusy || flow.run || bluetooth.busy || !session?.setup?.phone) return;
   const currentEpoch = epoch;
+  let selected = false;
   chooserBusy = true;
   renderControls();
   try {
     // requestDevice is called in this click's activation, before any network request.
     const device = await bluetooth.choose();
     if (epoch !== currentEpoch) return;
+    selected = true;
     notice(`Bluetooth access granted for ${device.name || 'your phone'}. Its login signature still needs to be verified.`);
-    if (session.setup.phone.online) void startChallenge();
   } catch (error) {
     if (epoch === currentEpoch) notice(error.name === 'NotFoundError' ? 'No phone selected. Start its setup advertisement in the Android app and choose again.' : error.message);
   } finally {
     if (epoch === currentEpoch) chooserBusy = false;
     renderControls();
   }
+  if (epoch === currentEpoch && selected && session?.setup?.phone?.online) void startChallenge();
 });
 $('verify-button').addEventListener('click', () => void startChallenge());
 $('retry-button').addEventListener('click', () => {
@@ -515,6 +775,7 @@ window.addEventListener('pagehide', () => {
 window.addEventListener('pageshow', event => {
   if (event.persisted) location.reload();
 });
+window.addEventListener('hashchange', () => renderControls());
 
 async function boot() {
   loginBusy = true;
@@ -526,8 +787,11 @@ async function boot() {
   } catch (error) {
     if (epoch === currentEpoch) notice(error.message);
   } finally {
-    if (epoch === currentEpoch) loginBusy = false;
-    renderControls();
+    if (epoch === currentEpoch) {
+      loginBusy = false;
+      restoringSession = false;
+      renderControls();
+    }
   }
 }
 void boot();

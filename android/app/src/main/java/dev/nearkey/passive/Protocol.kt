@@ -109,8 +109,9 @@ class RequestBuffer {
     fun clear() { bytes.reset(); finished = false }
 }
 
-/** ATT Read/Read Blob payload is MTU-1, including the zero-length terminal read. */
-fun proofSlice(proof: ByteArray, offset: Int, mtu: Int): ByteArray {
+/** Return the remaining value; Android clips the ATT response to its actual MTU. */
+fun proofReadResponse(proof: ByteArray, offset: Int): ByteArray {
+    require(proof.size <= 512) { "Proof exceeds the GATT attribute limit" }
     require(offset in 0..proof.size) { "Invalid read offset" }
-    return proof.copyOfRange(offset, minOf(proof.size, offset + mtu.coerceIn(23, 517) - 1))
+    return proof.copyOfRange(offset, proof.size)
 }

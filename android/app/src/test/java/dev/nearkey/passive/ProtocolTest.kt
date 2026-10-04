@@ -95,24 +95,26 @@ class ProtocolTest {
         for (mtu in listOf(23, 40, 185, 517)) {
             var offset = 0
             val output = ArrayList<Byte>()
-            while (offset < proof.size) {
-                val slice = proofSlice(proof, offset, mtu)
-                assertTrue(slice.size <= mtu - 1)
+            do {
+                // Android clips the app response using the link's negotiated
+                // MTU; the client stops on a short packet, even for invalid JSON.
+                val slice = proofReadResponse(proof, offset).take(mtu - 1)
                 output.addAll(slice.toList())
                 offset += slice.size
-            }
+            } while (slice.size == mtu - 1)
             assertArrayEquals(proof, output.toByteArray())
-            assertEquals(0, proofSlice(proof, offset, mtu).size)
+            assertEquals(0, proofReadResponse(proof, offset).size)
         }
-        rejects { proofSlice(proof, -1, 23) }
-        rejects { proofSlice(proof, proof.size + 1, 23) }
+        rejects { proofReadResponse(proof, -1) }
+        rejects { proofReadResponse(proof, proof.size + 1) }
+        rejects { proofReadResponse(ByteArray(513), 0) }
     }
 
     @Test fun exactMultipleLongReadHasEmptyTerminalResponse() {
         val proof = ByteArray(44) { it.toByte() }
-        assertEquals(22, proofSlice(proof, 0, 23).size)
-        assertEquals(22, proofSlice(proof, 22, 23).size)
-        assertEquals(0, proofSlice(proof, 44, 23).size)
+        assertEquals(22, proofReadResponse(proof, 0).take(22).size)
+        assertEquals(22, proofReadResponse(proof, 22).take(22).size)
+        assertEquals(0, proofReadResponse(proof, 44).size)
     }
 
     @Test fun jvmP256DerVectorsForNodeContractVerification() {

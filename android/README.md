@@ -4,6 +4,33 @@ Foreground native Kotlin app for **Bluetooth login verification**, implementing
 [`shared/PROTOCOL.md`](../shared/PROTOCOL.md) version 2. No Compose, background
 service, phone confirmation, biometrics, simulator or manual proof path.
 
+## Phone screens
+
+The phone opens a three-step setup wizard: introduction, scan/review a website,
+and enable Bluetooth. **Connect website** saves the enrollment; **Connect Bluetooth & finish**
+requests Nearby devices access and starts setup advertising. Once advertising has
+actually started and the website's authenticated phone channel is online, the app
+opens **Your websites** automatically. Browser selection and login verification
+still finish in the browser. A website that is paired but has unfinished Bluetooth
+setup resumes the last step when the app is reopened.
+
+The list shows all enrolled website origins and their live connection status.
+The fixed **+** button at the bottom left opens setup for another website. Each
+origin keeps its own credential and authenticated channel; adding a website
+preserves existing registrations. The demo server still supports one account and
+one phone per server instance. Dashboard app metadata does not create a phone
+registration for a third-party website.
+
+Tap a website for connection retry, Bluetooth setup, connection details, or
+**Forget website**. Forgetting removes only that origin's local credential; its
+server registration still needs an offline reset before pairing again. The phone
+key is retained while any registrations remain. Existing single-server app
+credentials migrate into the list on upgrade. Pairing codes stay in memory.
+
+All channels operate only while the app is in the foreground. Concurrent login
+requests from different origins use the Bluetooth peripheral one at a time and
+keep their original server deadlines.
+
 ## Build
 
 Use JDK 17 or 21 and an existing Android SDK containing
@@ -66,7 +93,7 @@ its `&` characters stay inside the remote shell argument:
 ```
 
 Replace the example code with the current pairing code. The URI only prefills the
-server origin and code; review them and tap **Enroll phone** to submit enrollment.
+server origin and code; review them and tap **Connect website** to submit enrollment.
 
 ## Demo setup
 
@@ -79,13 +106,13 @@ server origin and code; review them and tap **Enroll phone** to submit enrollmen
    **Scan setup QR code** in the app and scan the browser's QR. Review the server
    address; no code entry is needed. **Enter details manually** opens the optional
    pairing-code and server-origin fields. Tap
-   **Enroll phone**. The P-256 private key lives in
+   **Connect website**. The P-256 private key lives in
    AndroidKeyStore, non-exportable, without user-authentication requirements.
    Hardware backing is best effort, reported from KeyInfo, never guaranteed.
    Enrollment sends DER SPKI and DER SHA256withECDSA proof with unpadded base64url.
    The returned phone token lives in app-private preferences; backup is disabled.
 3. Keep the phone app visible. Bluetooth must already be enabled. Tap
-   **Advertise setup for 60 seconds**, granting Nearby devices permissions if
+   **Connect Bluetooth & finish**, granting Nearby devices permissions if
    prompted, then explicitly click the browser's first-time Bluetooth chooser.
    Setup mode advertises the service UUID plus the phone's configured Bluetooth
    name in a separate scan response, so the browser chooser shows a recognizable
@@ -104,7 +131,7 @@ Enrollment QR scanning and the `enrollment_uri` activity extra use the same stri
 setup URI parser. Invalid setup links leave the existing fields unchanged. A QR
 contains the temporary origin and pairing code, never a password, phone token or
 Bluetooth login proof. The server still checks the pairing deadline and single
-use when **Enroll phone** is tapped. Scanning does not authorize a login or skip
+use when **Connect website** is tapped. Scanning does not authorize a login or skip
 Bluetooth verification.
 
 The scanner runs locally using ZXing and requests Camera permission when opened.
@@ -115,8 +142,8 @@ pending state and wall/monotonic deadlines are checked before signing the exact
 UTF-8 version 2 login text defined in the shared contract, binding challenge ID,
 nonce, phone ID, expiry, username, service name and pending-session identifier.
 The prefix is `NEARKEY-LOGIN-V2`; enrollment retains `NEARKEY-ENROLL-V1`.
-Proof exists before the final write ACK. GATT reads support offsets and MTU-1 slices, including an empty terminal
-read; the server stays open while a central reads after advertising stops.
+Proof exists before the final write ACK. GATT reads return the remaining proof at each offset, including an empty terminal
+read. Android's ATT stack clips packets to the actual negotiated MTU, avoiding a stale app-side MTU on reused links; the server stays open while a central reads after advertising stops.
 Only one central is accepted. Disconnect clears buffers/proof and readvertises
 only before the original deadline. Cancel, expiry, channel loss, local reset and
 leaving foreground close GATT/advertising and discard the pending challenge.
@@ -124,15 +151,15 @@ leaving foreground close GATT/advertising and discard the pending challenge.
 Reconnect uses bounded exponential delay while foreground and accepts only live
 challenges resent by the authenticated server. Old socket and HTTP callbacks
 cannot mutate a new channel/session. Radio/permission/peripheral failures are
-shown, never silently toggle Bluetooth. Use retry advertising after enabling
-Bluetooth or granting permissions; use retry online connection after a network
-failure. Keep the phone clock synchronized with the server; the app rejects
+shown, never silently toggle Bluetooth. Open a website’s **Bluetooth setup** after enabling Bluetooth or granting
+permissions; use **Retry website connection** after a network failure. Keep the phone clock synchronized with the server; the app rejects
 expired challenges or challenges appearing more than 60 seconds in the future.
 
 ## Reset and verification boundaries
 
-The demo server's in-memory state resets on restart. **Forget local enrollment**
-erases this phone's token/key, not the server's registration. Existing phone
+The demo server's in-memory state resets on restart. **Forget website**
+erases that website’s local token, not the server’s registration. The key is
+erased only after the last website is forgotten. Existing phone
 replacement is never automatic. Coordinate an explicit offline server reset and
 forget local enrollment before pairing anew. An interrupted enrollment may have
 committed on the server without saving the token locally; resolve it with the

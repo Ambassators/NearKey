@@ -34,7 +34,6 @@ class BlePeripheral(
     private var server: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     private var peer: BluetoothDevice? = null
-    private var mtu = 23
     private val buffer = RequestBuffer()
     private var proof: ByteArray? = null
     private var advertisement: AdvertiseCallback? = null
@@ -88,7 +87,7 @@ class BlePeripheral(
                         else onStatus(if (challenge == null) "Setup advertising (60 seconds; no signing)" else "Advertising for pending challenge")
                         if (!active) return@post
                         // Only actual onStartSuccess earns a readiness ACK; starting GATT is not enough.
-                        if (challenge != null) onReady()
+                        onReady()
                     }
                 }
                 override fun onStartFailure(errorCode: Int) {
@@ -139,22 +138,18 @@ class BlePeripheral(
                         // A duplicate connected callback must not erase an in-progress request or proof.
                         if (peer == device) return@post
                         peer = device
-                        buffer.clear(); proof = null; mtu = 23
+                        buffer.clear(); proof = null
                         stopAdvertising()
                         if (!active) return@post
                         onStatus(if (challenge == null) "Setup central connected; signing disabled" else "Central connected; waiting for handshake")
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED && peer == device) {
                         peer = null
-                        buffer.clear(); proof = null; mtu = 23
+                        buffer.clear(); proof = null
                         onStatus("Central disconnected")
                         if (live()) advertise() else fail("Bluetooth window expired")
                     }
                 } catch (e: Exception) { fail(e.message ?: "Bluetooth connection failed") }
             }
-        }
-
-        override fun onMtuChanged(device: BluetoothDevice, newMtu: Int) {
-            handler.post { if (active && peer == device) mtu = newMtu.coerceIn(23, 517) }
         }
 
         override fun onCharacteristicWriteRequest(device: BluetoothDevice, requestId: Int,
@@ -207,7 +202,10 @@ class BlePeripheral(
                 } else if (offset !in 0..result.size) {
                     respond(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null)
                 } else {
-                    respond(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, proofSlice(result, offset, mtu))
+                    // Android's ATT stack clips this suffix to the negotiated MTU.
+                    // A cached/default MTU can be stale on an existing Mac link;
+                    // pre-slicing to 22 bytes then looks like end-of-value to it.
+                    respond(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, proofReadResponse(result, offset))
                 }
             }
         }
@@ -247,7 +245,7 @@ class BlePeripheral(
         server = null
         peer?.let { try { gatt?.cancelConnection(it) } catch (_: Exception) { } }
         peer = null
-        buffer.clear(); proof = null; mtu = 23
+        buffer.clear(); proof = null
         // Adapter shutdown can also throw IllegalStateException; still attempt every release.
         try { gatt?.clearServices() } catch (_: Exception) { }
         try { gatt?.close() } catch (_: Exception) { }

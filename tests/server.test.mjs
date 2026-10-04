@@ -129,6 +129,121 @@ function streamedPost(base, route, cookie, firstChunk) {
 
 const waitTurn = () => new Promise((resolve) => setTimeout(resolve, 25));
 
+function replacementEnrollment(pairing, pair = keyPair()) {
+  return {pair, body: {pairingCode: pairing.pairingCode, publicKey: pair.encoded, label: 'Replacement phone',
+    signature: signature(pair, enrollmentText(pairing.pairingCode, pair.encoded))}};
+}
+
+test('phone replacement requires an existing verified session and re-verifies the new phone', async (t) => {
+  const f = await fixture(t);
+  const replace = (cookie) => f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie});
+  assert.equal((await replace()).status, 401);
+  const old = await f.enrolled();
+  assert.equal((await replace(old.cookie)).status, 403);
+  await f.complete(old, await f.challenge(old));
+  const saved = await f.request('/api/apps', {method: 'POST', cookie: old.cookie, body: {name: 'Saved app'}});
+  const second = {...old, cookie: await f.login()};
+  await f.complete(second, await f.challenge(second));
+  const pendingBrowser = {...old, cookie: await f.login()};
+  const oldChallenge = await f.challenge(pendingBrowser);
+  const ticket = await replace(old.cookie);
+  assert.equal(ticket.status, 200);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).data.phone.id, old.phoneId);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).data.phone.online, true);
+  assert.deepEqual((await f.request('/api/session', {cookie: old.cookie})).data.setup.replacement,
+    {pairingId: ticket.data.pairingId, expiresAt: ticket.data.expiresAt});
+  assert.equal((await f.request('/api/session', {cookie: second.cookie})).data.setup.replacement, undefined);
+  const next = replacementEnrollment(ticket.data);
+  const closed = once(old.ws, 'close');
+  const result = await f.request('/api/phones/enroll', {method: 'POST', body: next.body});
+  assert.equal(result.status, 200);
+  await closed;
+  assert.notEqual(result.data.phoneId, old.phoneId);
+  assert.notEqual(result.data.deviceToken, old.deviceToken);
+  const state = (await f.request('/api/session', {cookie: old.cookie})).data;
+  assert.equal(state.authenticated, false);
+  assert.equal(state.pending, true);
+  assert.equal(state.setup.phone.id, result.data.phoneId);
+  assert.equal(state.setup.replacement, undefined);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).status, 403);
+  assert.equal((await f.request('/api/apps', {method: 'POST', cookie: old.cookie, body: {name: 'Premature'}})).status, 403);
+  assert.equal((await f.request('/api/session', {cookie: second.cookie})).data.pending, false);
+  assert.equal((await f.request('/api/account', {cookie: second.cookie})).status, 401);
+  assert.equal((await f.request('/api/challenges/' + oldChallenge.id, {cookie: pendingBrowser.cookie})).status, 401);
+  assert.equal((await f.request(`/api/phone/challenges/${oldChallenge.id}/ready`,
+    {method: 'POST', token: old.deviceToken, body: {}})).status, 401);
+  await rejectUpgrade(f.base, '/api/phone-channel', {Authorization: `Bearer ${old.deviceToken}`}, 401);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: next.body})).status, 409);
+  const fresh = {cookie: old.cookie, pair: next.pair, ...result.data, ...await f.connect(result.data.deviceToken)};
+  const challenge = await f.challenge(fresh);
+  assert.equal(challenge.phoneId, fresh.phoneId);
+  assert.equal((await f.complete({...fresh, pair: old.pair}, challenge)).status, 403);
+  assert.equal((await f.complete(fresh, challenge)).status, 200);
+  assert.deepEqual((await f.request('/api/account', {cookie: fresh.cookie})).data.apps, [saved.data.app]);
+});
+
+test('cancelled, expired and invalid replacement setup leaves the old phone usable', async (t) => {
+  const f = await fixture(t);
+  const old = await f.enrolled();
+  await f.complete(old, await f.challenge(old));
+  const replace = () => f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie: old.cookie});
+  const first = replacementEnrollment((await replace()).data);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST',
+    body: {...first.body, signature: signature(keyPair(), 'invalid')}})).status, 400);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).data.phone.id, old.phoneId);
+  assert.equal((await f.request('/api/phones/replacement/cancel', {method: 'POST', body: {}, cookie: old.cookie})).status, 200);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: first.body})).status, 409);
+  const expired = replacementEnrollment((await replace()).data);
+  f.advance(5 * 60_000);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: expired.body})).status, 409);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).data.phone.online, true);
+  const later = {...old, cookie: await f.login()};
+  assert.equal((await f.complete(later, await f.challenge(later))).status, 200);
+  assert.equal((await f.request('/api/account', {cookie: later.cookie})).data.phone.id, old.phoneId);
+});
+
+test('two verified browsers cannot cancel each other or consume superseded replacement tickets', async (t) => {
+  const f = await fixture(t);
+  const old = await f.enrolled();
+  await f.complete(old, await f.challenge(old));
+  const second = {...old, cookie: await f.login()};
+  await f.complete(second, await f.challenge(second));
+  const replace = (cookie) => f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie});
+  const first = replacementEnrollment((await replace(old.cookie)).data);
+  const latest = replacementEnrollment((await replace(second.cookie)).data);
+  await f.request('/api/phones/replacement/cancel', {method: 'POST', body: {}, cookie: old.cookie});
+  assert.equal((await f.request('/api/session', {cookie: old.cookie})).data.setup.replacement, undefined);
+  assert.ok((await f.request('/api/session', {cookie: second.cookie})).data.setup.replacement);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: first.body})).status, 401);
+  const results = await Promise.all([first, latest].map(({body}) =>
+    f.request('/api/phones/enroll', {method: 'POST', body})));
+  assert.notEqual(results[0].status, 200);
+  assert.equal(results[1].status, 200);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).status, 401);
+  assert.equal((await f.request('/api/account', {cookie: second.cookie})).status, 403);
+});
+
+test('replacement creation and cancellation recheck authorization after body upload', async (t) => {
+  const f = await fixture(t);
+  const old = await f.enrolled();
+  await f.complete(old, await f.challenge(old));
+  const upload = streamedPost(f.base, '/api/phones/replacement', old.cookie, '{');
+  await waitTurn();
+  f.advance(8 * 60 * 60_000);
+  upload.req.end('}');
+  assert.equal((await upload.result).status, 401);
+  const current = {...old, cookie: await f.login()};
+  await f.complete(current, await f.challenge(current));
+  const ticket = await f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie: current.cookie});
+  const cancel = streamedPost(f.base, '/api/phones/replacement/cancel', current.cookie, '{');
+  await waitTurn();
+  await f.request('/api/logout', {method: 'POST', body: {}, cookie: current.cookie});
+  cancel.req.end('}');
+  assert.equal((await cancel.result).status, 401);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: replacementEnrollment(ticket.data).body})).status, 409);
+  assert.equal((await f.request('/api/session', {cookie: await f.login()})).data.setup.phone.id, old.phoneId);
+});
+
 test('wire texts, real DER signatures and canonical SPKI enforce the shared contract', () => {
   assert.equal(approvalText({id: 'id', nonce: 'nonce', phoneId: 'phone', expiresAt: 123,
     username: 'demo', serviceName: 'NearKey', sessionId: 'session'}),
@@ -170,6 +285,91 @@ test('password verifies only first factor; pending session cannot access provide
   assert.equal((await f.request('/api/account', {cookie, headers: {Origin: 'https://evil.example'}})).status, 403);
   assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie, headers: {Origin: ''}})).status, 403);
   assert.equal((await f.request('/api/account', {headers: {Cookie: `${cookie}; ${cookie}`}})).status, 401);
+});
+
+test('app entries require both login factors and persist across later verified logins', async (t) => {
+  const f = await fixture(t);
+  const add = (body, cookie) => f.request('/api/apps', {method: 'POST', body, cookie});
+  assert.equal((await add({name: 'Work'})).status, 401);
+  const phone = await f.enrolled();
+  assert.equal((await add({name: 'Work'}, phone.cookie)).status, 403);
+  assert.equal((await f.complete(phone, await f.challenge(phone))).status, 200);
+  assert.deepEqual((await f.request('/api/account', {cookie: phone.cookie})).data.apps, []);
+  const saved = await add({name: '  Work account  ', url: ' HTTPS://EXAMPLE.COM/work '}, phone.cookie);
+  assert.equal(saved.status, 201);
+  assert.match(saved.data.app.id, /^[a-f0-9-]{36}$/);
+  assert.equal(saved.data.app.name, 'Work account');
+  assert.equal(saved.data.app.url, 'https://example.com/work');
+  assert.equal(saved.data.app.createdAt, f.time());
+  const local = await add({name: 'Local tools', url: 'http://localhost:3000'}, phone.cookie);
+  assert.equal(local.status, 201);
+  assert.equal(local.data.app.url, 'http://localhost:3000/');
+  assert.notEqual(local.data.app.id, saved.data.app.id);
+  const account = (await f.request('/api/account', {cookie: phone.cookie})).data;
+  assert.deepEqual(account.apps, [saved.data.app, local.data.app]);
+  assert.equal((await add({name: 'Offline notes'}, phone.cookie)).status, 201);
+  const rejectedOrigin = await f.request('/api/apps', {method: 'POST', cookie: phone.cookie,
+    body: {name: 'Cross-site'}, headers: {Origin: 'https://other.example'}});
+  assert.equal(rejectedOrigin.status, 403);
+  await f.request('/api/logout', {method: 'POST', cookie: phone.cookie, body: {}});
+  assert.equal((await add({name: 'After logout'}, phone.cookie)).status, 401);
+  phone.cookie = await f.login();
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 403);
+  assert.equal((await f.complete(phone, await f.challenge(phone))).status, 200);
+  const restored = (await f.request('/api/account', {cookie: phone.cookie})).data.apps;
+  assert.deepEqual(restored.slice(0, 2), account.apps);
+  assert.equal(restored.length, 3);
+  assert.equal(restored[2].url, null);
+});
+
+test('app metadata rejects unsafe values and duplicate entries without changing the list', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  await f.complete(phone, await f.challenge(phone));
+  const add = (body) => f.request('/api/apps', {method: 'POST', body, cookie: phone.cookie});
+  for (const body of [null, [], {}, {url: 'https://example.com'}, {name: 1}, {name: ' '},
+    {name: 'x'.repeat(81)}, {name: 'Work\naccount'}, {name: 'Work', extra: true},
+    {name: 'Work', url: null}, {name: 'Work', url: 1}]) {
+    assert.equal((await add(body)).status, 400);
+  }
+  for (const url of ['example.com', '//example.com', 'https:example.com', 'ftp://example.com',
+    'javascript:alert(1)', 'https://user:password@example.com', 'https://example.com/#settings',
+    'https://example.com/#', 'https://example.com/a b', 'https://example.com/\n',
+    'https://example.com/%zz', 'https://example.com/' + 'x'.repeat(2048)]) {
+    assert.equal((await add({name: 'Work', url})).status, 400, url);
+  }
+  assert.deepEqual((await f.request('/api/account', {cookie: phone.cookie})).data.apps, []);
+  assert.equal((await add({name: 'Work', url: 'https://example.com'})).status, 201);
+  const duplicate = await add({name: ' work ', url: 'HTTPS://EXAMPLE.COM/'});
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.data.error, 'app_exists');
+  assert.equal((await add({name: 'Work', url: 'https://different.example'})).status, 201);
+  assert.equal((await add({name: 'Notes', url: ''})).status, 201);
+  assert.equal((await add({name: 'notes'})).status, 409);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.apps.length, 3);
+});
+
+test('app list is bounded and expired uploads cannot add entries', async (t) => {
+  const f = await fixture(t);
+  const phone = await f.enrolled();
+  await f.complete(phone, await f.challenge(phone));
+  for (let index = 0; index < 30; index++) {
+    const result = await f.request('/api/apps', {method: 'POST', cookie: phone.cookie, body: {name: `App ${index}`}});
+    assert.equal(result.status, 201);
+  }
+  const overflow = await f.request('/api/apps', {method: 'POST', cookie: phone.cookie, body: {name: 'App 31'}});
+  assert.equal(overflow.status, 409);
+  assert.equal(overflow.data.error, 'app_limit');
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.apps.length, 30);
+  const upload = streamedPost(f.base, '/api/apps', phone.cookie, '{"name":"Late');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  f.advance(8 * 60 * 60_000);
+  upload.req.end(' app"}');
+  assert.equal((await upload.result).status, 401);
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 401);
+  phone.cookie = await f.login();
+  await f.complete(phone, await f.challenge(phone));
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).data.apps.length, 30);
 });
 
 test('configuration rejects unsafe origins and sets Secure on HTTPS sessions', async (t) => {

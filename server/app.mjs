@@ -12,6 +12,7 @@ const SESSION_TTL_MS = 8 * 60 * 60_000;
 const PENDING_SESSION_TTL_MS = 10 * 60_000;
 const PAIRING_TTL_MS = 5 * 60_000;
 const BODY_LIMIT = 4096;
+const APP_LIMIT = 30;
 const USER = Object.freeze({id: 'demo', name: 'Demo User'});
 const pending = (record) => record && ['waiting_phone', 'waiting_bluetooth'].includes(record.status);
 
@@ -48,6 +49,36 @@ function exactFields(body, fields) {
       || fields.some((field) => !Object.hasOwn(body, field))) {
     fail(400, 'invalid_body', `Expected fields: ${fields.join(', ') || 'none'}`);
   }
+}
+
+function appDetails(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !Object.hasOwn(body, 'name') || Object.keys(body).some((field) => !['name', 'url'].includes(field))) {
+    fail(400, 'invalid_body', 'Expected app name and optional URL');
+  }
+  if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 80
+      || /[\u0000-\u001f\u007f]/.test(body.name)) {
+    fail(400, 'invalid_app_name', 'App name must contain 1–80 characters without control characters');
+  }
+  const name = body.name.trim();
+  let url = null;
+  if (Object.hasOwn(body, 'url')) {
+    if (typeof body.url !== 'string' || /[\u0000-\u001f\u007f]/.test(body.url)) {
+      fail(400, 'invalid_app_url', 'Enter an HTTP or HTTPS app URL without control characters');
+    }
+    const value = body.url.trim();
+    if (value) {
+      let parsed;
+      try { parsed = new URL(value); } catch { fail(400, 'invalid_app_url', 'Enter a complete HTTP or HTTPS app URL'); }
+      if (value.length > 2048 || /[\u0000-\u0020\u007f\\]/.test(value) || /%(?![a-f0-9]{2})/i.test(value)
+          || !/^https?:\/\//i.test(value) || !['http:', 'https:'].includes(parsed.protocol)
+          || parsed.username || parsed.password || parsed.hash || value.includes('#')) {
+        fail(400, 'invalid_app_url', 'Use an HTTP or HTTPS app URL without credentials or a fragment');
+      }
+      url = parsed.href;
+    }
+  }
+  return {name, url};
 }
 
 function readJson(req) {
@@ -150,6 +181,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
   let phone = null;
   let activeId = null;
   const activity = [];
+  // These are saved account app entries, not credentials or live integrations.
+  const apps = [];
   let closing = false;
 
   const cookie = (token = '') => `nearkey_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token ? SESSION_TTL_MS / 1000 : 0}${publicOrigin.startsWith('https:') ? '; Secure' : ''}`;
@@ -178,6 +211,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
     const time = now();
     for (const [token, session] of sessions) if (session.expiresAt <= time) revokeSession(token);
     if (pairing?.expiresAt <= time) pairing = null;
+    if (pairing?.replacementPhoneId && (phone?.id !== pairing.replacementPhoneId
+        || sessions.get(pairing.session)?.verifiedAt == null)) pairing = null;
     for (const record of challenges.values()) {
       if (pending(record) && record.challenge.expiresAt <= time) endChallenge(record, 'expired');
     }
@@ -221,8 +256,10 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
     const session = sessions.get(token);
     const authenticated = Boolean(session && session.verifiedAt !== null);
     const record = session ? challenges.get(session.challengeId) : null;
+    const replacement = pairing?.replacementPhoneId && pairing.session === token
+      ? {pairingId: pairing.pairingId, expiresAt: pairing.expiresAt} : null;
     return {authenticated, pending: Boolean(session && !authenticated), user: authenticated ? USER : null,
-      setup: session ? {phone: phoneStatus()} : null, challenge: record?.challenge || null,
+      setup: session ? {phone: phoneStatus(), ...(replacement ? {replacement} : {})} : null, challenge: record?.challenge || null,
       challengeStatus: record?.status || null};
   }
   function requirePhone(req) {
@@ -308,7 +345,9 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         const body = await readJson(req);
         exactFields(body, ['pairingCode', 'publicKey', 'label', 'signature']);
         sweep();
-        if (phone) fail(409, 'phone_exists', 'An enrolled phone cannot be replaced; use an offline demo reset');
+        if (phone && !pairing?.replacementPhoneId) {
+          fail(409, 'phone_exists', 'Use Connect a different phone from a verified browser session');
+        }
         if (typeof body.pairingCode !== 'string' || body.pairingCode.length > 128
             || !pairing || body.pairingCode !== pairing.pairingCode
             || pairing.expiresAt <= now() || !sessions.has(pairing.session)) {
@@ -318,6 +357,11 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
           fail(400, 'invalid_label', 'Phone label must contain 1–40 characters');
         }
         const enrollment = pairing;
+        const previousPhone = phone;
+        if (enrollment.replacementPhoneId && (previousPhone?.id !== enrollment.replacementPhoneId
+            || sessions.get(enrollment.session)?.verifiedAt == null)) {
+          fail(401, 'invalid_pairing', 'Pairing code expired or invalid');
+        }
         let key;
         try {
           key = parsePublicKey(body.publicKey);
@@ -325,8 +369,23 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         } catch { fail(400, 'invalid_enrollment_proof', 'Expected P-256 SPKI key and valid DER proof of possession'); }
         // Proof verification must not let a code or its originating session outlive its deadline.
         sweep();
-        if (pairing !== enrollment || enrollment.expiresAt <= now() || !sessions.has(enrollment.session)) {
+        if (pairing !== enrollment || enrollment.expiresAt <= now() || !sessions.has(enrollment.session)
+            || (enrollment.replacementPhoneId && (phone !== previousPhone
+              || sessions.get(enrollment.session)?.verifiedAt == null))) {
           fail(401, 'invalid_pairing', 'Pairing code expired or invalid');
+        }
+        if (enrollment.replacementPhoneId) {
+          // Commit replacement only after the new phone proves possession of its key.
+          // The initiating session must prove the new phone before regaining account access.
+          for (const record of challenges.values()) endChallenge(record, 'cancelled');
+          for (const token of sessions.keys()) if (token !== enrollment.session) revokeSession(token);
+          const login = sessions.get(enrollment.session);
+          login.verifiedAt = null;
+          login.expiresAt = now() + PENDING_SESSION_TTL_MS;
+          login.challengeId = null;
+          const oldSocket = previousPhone.socket;
+          previousPhone.socket = null;
+          if (oldSocket) oldSocket.terminate();
         }
         phone = {id: randomUUID(), label: body.label.trim(), key, deviceToken: randomToken(), socket: null};
         pairing = null;
@@ -356,7 +415,24 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
       const session = requireSession(req);
       if (req.method === 'GET' && route === '/api/account') {
         requireAuthenticated(session);
-        json(res, 200, {user: USER, phone: phoneStatus(), activity});
+        json(res, 200, {user: USER, phone: phoneStatus(), activity, apps});
+        return;
+      }
+      if (req.method === 'POST' && route === '/api/apps') {
+        requireAuthenticated(session);
+        const details = appDetails(await readJson(req));
+        // An upload cannot outlive the verified session that authorized it.
+        sweep();
+        if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
+        requireAuthenticated(session);
+        if (apps.some((app) => app.name.toLowerCase() === details.name.toLowerCase()
+            && (app.url || '').toLowerCase() === (details.url || '').toLowerCase())) {
+          fail(409, 'app_exists', 'This app is already in your list');
+        }
+        if (apps.length >= APP_LIMIT) fail(409, 'app_limit', 'You can add up to 30 apps in this demo');
+        const app = Object.freeze({id: randomUUID(), ...details, createdAt: now()});
+        apps.push(app);
+        json(res, 201, {app});
         return;
       }
       if (req.method === 'POST' && route === '/api/logout') {
@@ -369,8 +445,26 @@ export async function createApp({publicOrigin = 'http://localhost:5173', usernam
         exactFields(await readJson(req), []);
         sweep();
         if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
-        if (phone) fail(409, 'phone_exists', 'An enrolled phone cannot be replaced; use an offline demo reset');
+        if (phone) fail(409, 'phone_exists', 'Use Connect a different phone from a verified browser session');
         pairing = {pairingId: randomUUID(), pairingCode: randomToken(), expiresAt: now() + PAIRING_TTL_MS, session};
+        const {pairingId, pairingCode, expiresAt} = pairing;
+        json(res, 200, {pairingId, pairingCode, expiresAt});
+        return;
+      }
+      if (req.method === 'POST' && ['/api/phones/replacement', '/api/phones/replacement/cancel'].includes(route)) {
+        requireAuthenticated(session);
+        exactFields(await readJson(req), []);
+        sweep();
+        if (!sessions.has(session)) fail(401, 'session_required', 'Please log in');
+        requireAuthenticated(session);
+        if (route.endsWith('/cancel')) {
+          if (pairing?.replacementPhoneId && pairing.session === session) pairing = null;
+          json(res, 200, {ok: true});
+          return;
+        }
+        if (!phone) fail(409, 'phone_required', 'Enroll a phone before replacing it');
+        pairing = {pairingId: randomUUID(), pairingCode: randomToken(), expiresAt: now() + PAIRING_TTL_MS,
+          session, replacementPhoneId: phone.id};
         const {pairingId, pairingCode, expiresAt} = pairing;
         json(res, 200, {pairingId, pairingCode, expiresAt});
         return;

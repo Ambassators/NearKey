@@ -56,6 +56,8 @@ class PhoneApi {
                         e is SSLException -> "HTTPS connection failed; check the server certificate and device trust"
                         e is UnknownServiceException && !base.isHttps ->
                             "Cleartext HTTP is unavailable; use HTTPS or a debug build"
+                        !base.isHttps && base.host in setOf("localhost", "127.0.0.1", "::1") ->
+                            "Cannot reach the computer's local server. Check the USB connection and USB forwarding, then retry. For Wi-Fi setup, use a reachable HTTPS server address"
                         else -> "Network request failed; check URL and connectivity"
                     }
                     done(null, error)
@@ -64,19 +66,10 @@ class PhoneApi {
                     val result: Pair<JSONObject?, String?> = try {
                         response.use {
                             if (!it.isSuccessful) {
-                                // Avoid echoing response bodies or credentials into the UI/logs.
-                                null to "Server rejected request (HTTP ${it.code})"
+                                val errorBody = try { responseBytes(it) } catch (_: Exception) { null }
+                                null to PhoneErrors.response(it.code, errorBody)
                             } else {
-                                val output = ByteArrayOutputStream()
-                                val input = it.body?.byteStream() ?: error("Empty response")
-                                val chunk = ByteArray(1024)
-                                while (true) {
-                                    val count = input.read(chunk)
-                                    if (count < 0) break
-                                    require(output.size() + count <= 8192) { "Response too large" }
-                                    output.write(chunk, 0, count)
-                                }
-                                JSONObject(Protocol.utf8(output.toByteArray())) to null
+                                JSONObject(Protocol.utf8(responseBytes(it))) to null
                             }
                         }
                     } catch (_: IOException) {
@@ -91,6 +84,19 @@ class PhoneApi {
                 }
             })
         }
+    }
+
+    private fun responseBytes(response: Response): ByteArray {
+        val output = ByteArrayOutputStream()
+        val input = response.body?.byteStream() ?: error("Empty response")
+        val chunk = ByteArray(1024)
+        while (true) {
+            val count = input.read(chunk)
+            if (count < 0) break
+            require(output.size() + count <= 8192) { "Response too large" }
+            output.write(chunk, 0, count)
+        }
+        return output.toByteArray()
     }
 
     @Synchronized

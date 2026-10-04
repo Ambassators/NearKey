@@ -9,71 +9,68 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
-import android.view.View
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.ViewModelProvider
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
-    private val api = PhoneApi()
+    private val enrollmentApi = PhoneApi()
     private val key = SigningKey()
     private val prefs by lazy { getSharedPreferences("phone", MODE_PRIVATE) }
-    private lateinit var urlInput: EditText
-    private lateinit var codeInput: EditText
-    private lateinit var enrollButton: Button
-    private lateinit var scanButton: Button
-    private lateinit var manualButton: Button
-    private lateinit var manualInputs: LinearLayout
-    private lateinit var setupReview: TextView
-    private lateinit var enrollmentHelp: TextView
-    private lateinit var setupButton: Button
-    private lateinit var onlineText: TextView
-    private lateinit var bleText: TextView
-    private lateinit var challengeText: TextView
-    private lateinit var statusText: TextView
+    private val store by lazy { WebsiteStore(prefs) }
+    private val draft by lazy { ViewModelProvider(this)[EnrollmentDraft::class.java] }
+    private lateinit var ui: NearKeyUi
+    private var websites = emptyList<ConnectedWebsite>()
+    private val connections = linkedMapOf<String, WebsiteConnection>()
+    private var storageError = false
     private var foreground = false
     private var generation = 0
     private var enrolling = false
+    private var wizardStep = 1 // 0 is the connected websites list.
     private var manualExpanded = false
     private var setupLoaded = false
-    private var socket: WebSocket? = null
-    private var online = false
-    private var reconnectDelay = 1000L
-    private var pending: Challenge? = null
-    private var pendingEnd = 0L
+    private var manualOrigin = ""
+    private var manualCode = ""
+    private var setupOrigin: String? = null
+    private var bluetoothReadyOrigin: String? = null
+    private var status = ""
+    private var bluetoothStatus = "Bluetooth is ready when a login needs it."
     private var ble: BlePeripheral? = null
     private var permissionAction: (() -> Unit)? = null
     private var permissionRequested = false
-    private var readyInFlight: String? = null
-    private val reconnect = Runnable { connect() }
+    private var readyInFlight: PendingLogin? = null
+    private val waiting = linkedMapOf<String, PendingLogin>()
+    private var activeLogin: PendingLogin? = null
+
+    private data class PendingLogin(val owner: WebsiteConnection, val challenge: Challenge, val end: Long) {
+        fun remaining() = minOf(challenge.expiresAt - System.currentTimeMillis(), end - SystemClock.elapsedRealtime())
+    }
+
     private val scanner = registerForActivityResult(ScanContract()) { result ->
-        if (result.contents == null) {
-            statusText.text = "Scan cancelled. You can scan again or enter the server URL and pairing code manually."
-        } else populateEnrollment(result.contents)
+        if (result.contents == null) setStatus("Scan cancelled. Scan again or enter your details manually.")
+        else populateEnrollment(result.contents)
+    }
+    private val bluetoothPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        permissionRequested = false
+        val action = permissionAction; permissionAction = null
+        if (foreground) {
+            if (hasPermissions()) action?.invoke()
+            else setStatus("Bluetooth access denied. Allow Nearby devices in app settings, then retry.")
+        }
     }
     private val ticker = object : Runnable {
         override fun run() {
             if (!foreground) return
-            pending?.let {
-                if (System.currentTimeMillis() >= it.expiresAt || SystemClock.elapsedRealtime() >= pendingEnd) {
-                    clearChallenge("Challenge expired")
-                }
+            waiting.values.toList().filter { it.remaining() <= 0 }.forEach {
+                clearLogin(it.owner, "Login request expired. Try again in your browser.")
             }
-            displayChallenge()
+            ui.updateLogin(loginDescription())
             handler.postDelayed(this, 250)
         }
     }
@@ -81,399 +78,318 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 40, 32, 32)
+        ui = NearKeyUi(this)
+        setContentView(ui.root)
+        try { websites = store.load() } catch (_: Exception) {
+            storageError = true
+            status = "Saved registrations could not be read. Clear local app storage before setting up again; server enrollments are unchanged."
         }
-        fun text(value: String): TextView = TextView(this).apply {
-            text = value; textSize = 17f; setPadding(0, 12, 0, 12); layout.addView(this)
+        setupOrigin = websites.firstOrNull { !it.setupComplete }?.origin
+        wizardStep = if (setupOrigin != null) 3 else if (websites.isEmpty()) 1 else 0
+        if (savedInstanceState != null && setupOrigin == null && !storageError) {
+            val restored = savedInstanceState.getInt("wizardStep", wizardStep)
+            if (restored in 0..2 && (restored != 0 || websites.isNotEmpty())) wizardStep = restored
         }
-        text("NearKey · Authenticator").textSize = 23f
-        text("Your phone verifies browser logins over Bluetooth. Keep this app open with Bluetooth enabled; verification happens automatically.")
-        enrollmentHelp = text("Scan the setup QR code shown in your browser. No code entry needed.")
-        manualInputs = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-        }
-        urlInput = EditText(this).apply {
-            hint = "Server URL (https://…)"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setSingleLine(true); setText(prefs.getString("origin", "")); manualInputs.addView(this)
-        }
-        codeInput = EditText(this).apply {
-            hint = "Paste pairing code from browser"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setSingleLine(true); isSaveEnabled = false; manualInputs.addView(this)
-        }
-        scanButton = Button(this).apply {
-            text = "Scan setup QR code"
-            setOnClickListener {
-                if (this@MainActivity.foreground && !enrolled() && !enrolling) {
-                    scanner.launch(ScanOptions().apply {
-                        setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                        setPrompt("Scan the setup QR code shown in NearKey")
-                        setBeepEnabled(false)
-                        setOrientationLocked(false)
-                    })
+        draft.setup?.let { if (wizardStep != 3) applyEnrollment(it) }
+        websites.forEach(::addConnection)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (enrolling) return
+                when {
+                    wizardStep > 0 && websites.isNotEmpty() -> closeWizard()
+                    wizardStep == 2 -> { wizardStep = 1; render() }
+                    else -> { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
                 }
             }
-            layout.addView(this)
-        }
-        setupReview = text("").apply { visibility = View.GONE }
-        enrollButton = Button(this).apply {
-            text = "Enroll phone"
-            setOnClickListener { enroll() }; layout.addView(this)
-        }
-        manualButton = Button(this).apply {
-            text = "Enter details manually"
-            setOnClickListener {
-                manualExpanded = !manualExpanded
-                updateControls()
-            }
-            layout.addView(this)
-        }
-        layout.addView(manualInputs)
-        setupButton = Button(this).apply {
-            text = "Advertise setup for 60 seconds"
-            setOnClickListener { withPermissions { startBluetooth(pending) } }; layout.addView(this)
-        }
-        Button(this).apply {
-            text = "Retry online connection"
-            setOnClickListener {
-                disconnect("Reconnecting")
-                handler.removeCallbacks(reconnect)
-                reconnectDelay = 1000
-                connect()
-            }
-            layout.addView(this)
-        }
-        onlineText = text("Phone channel: offline")
-        bleText = text("Bluetooth: stopped")
-        challengeText = text("Ready for a browser login")
-        statusText = text(if (enrolled())
-            "Locally enrolled · ${key.backing()}. Keep the app open for the authenticated phone channel."
-            else "Start signing in to NearKey in your browser, then scan its setup QR code.")
-        Button(this).apply {
-            text = "Forget local enrollment"
-            setOnClickListener {
-                AlertDialog.Builder(this@MainActivity).setTitle("Erase this phone's local key and token?")
-                    .setMessage("This does NOT remove the enrolled phone on the server. Re-enrollment requires an explicit offline server reset; password login cannot replace a phone.")
-                    .setNegativeButton("Keep enrollment", null)
-                    .setPositiveButton("Forget locally") { _, _ -> reset() }.show()
-            }
-            layout.addView(this)
-        }
-        setContentView(ScrollView(this).apply { addView(layout) })
-        val manualChanges = object : TextWatcher {
-            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(value: Editable?) {
-                if (setupLoaded) {
-                    setupLoaded = false
-                    setupReview.text = ""
-                    updateControls()
-                }
-            }
-        }
-        urlInput.addTextChangedListener(manualChanges)
-        codeInput.addTextChangedListener(manualChanges)
-        updateControls()
+        })
+        render()
         consumeEnrollmentIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("wizardStep", wizardStep)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun render() {
+        if (wizardStep == 0) {
+            ui.websites(websites, connectionStates(), loginDescription(), status, ::beginSetup, ::websiteDetails)
+        } else {
+            ui.wizard(wizardStep, manualOrigin, manualCode, manualExpanded, setupLoaded, enrolling,
+                foreground && !storageError, status, websites.isNotEmpty(),
+                start = { wizardStep = 2; render() }, scan = ::scan,
+                toggleManual = { manualExpanded = !manualExpanded; render() }, enroll = ::enroll,
+                bluetooth = ::setupBluetooth, close = ::closeWizard,
+                back = { if (websites.isEmpty()) { wizardStep = 1; render() } else closeWizard() },
+                retry = { setupOrigin?.let { connections[it]?.retry() } },
+                edit = { origin, code ->
+                    manualOrigin = origin; manualCode = code
+                    if (setupLoaded) { setupLoaded = false; draft.clear() }
+                })
+        }
+    }
+
+    private fun setStatus(message: String) { status = message; ui.updateStatus(message) }
+    private fun connectionStates() = connections.mapValues { (_, connection) -> connection.online to connection.status }
+    private fun loginDescription(): String {
+        val login = activeLogin ?: return if (connections.values.any { it.online })
+            "✓  Ready when you sign in" else "Waiting for website connection"
+        return "Verifying ${login.owner.website.address}\n${login.challenge.username} · ${(login.remaining().coerceAtLeast(0) + 999) / 1000}s remaining"
+    }
+
+    private fun beginSetup() {
+        if (websites.size >= 30) { setStatus("You can connect up to 30 websites."); return }
+        if (enrolling || storageError) return
+        setupOrigin = null; bluetoothReadyOrigin = null
+        manualOrigin = ""; manualCode = ""; setupLoaded = false; manualExpanded = false; draft.clear()
+        status = ""; wizardStep = 2; render()
+    }
+
+    private fun closeWizard() {
+        if (enrolling || websites.isEmpty()) return
+        draft.clear(); manualCode = ""; setupLoaded = false; manualExpanded = false
+        wizardStep = 0; render()
+    }
+
+    private fun scan() {
+        if (!foreground || enrolling || storageError || wizardStep != 2) return
+        scanner.launch(ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Scan the setup QR code in your computer’s browser")
+            setBeepEnabled(false); setOrientationLocked(false)
+        })
     }
 
     override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        consumeEnrollmentIntent(intent)
+        super.onNewIntent(intent); setIntent(intent); consumeEnrollmentIntent(intent)
     }
 
     private fun consumeEnrollmentIntent(intent: Intent) {
-        if (!intent.hasExtra("enrollment_uri")) return
-        val value = try { intent.getStringExtra("enrollment_uri") } catch (_: Exception) { null }
-        intent.removeExtra("enrollment_uri")
-        if (value == null) statusText.text = "Invalid setup QR code"
-        else populateEnrollment(value)
+        val hasExtra = intent.hasExtra("enrollment_uri")
+        val hasLink = intent.action == Intent.ACTION_VIEW && intent.data != null
+        if (!hasExtra && !hasLink) return
+        val value = try { if (hasExtra) intent.getStringExtra("enrollment_uri") else intent.dataString }
+            catch (_: Exception) { null }
+        intent.removeExtra("enrollment_uri"); if (hasLink) intent.data = null
+        if (value == null) setStatus("Invalid setup QR code") else populateEnrollment(value)
     }
 
     private fun populateEnrollment(value: String) {
-        if (enrolled() || enrolling) {
-            statusText.text = "This phone is already enrolled or enrollment is in progress. Setup cannot replace its enrollment."
-            return
-        }
+        if (enrolling || storageError) return
         try {
             val setup = EnrollmentQr.parse(value)
-            urlInput.setText(setup.origin.toString())
-            codeInput.setText(setup.pairingCode)
-            setupLoaded = true
-            manualExpanded = false
-            setupReview.text = "Setup ready\nServer: ${setup.origin}\nReview this server, then tap Enroll phone."
-            statusText.text = "Setup details loaded. No typing needed."
-            updateControls()
-        } catch (e: Exception) {
-            statusText.text = e.message ?: "Invalid setup QR code"
-        }
+            require(websites.none { it.origin == setup.origin.toString() }) {
+                "This website is already connected. Open its connection details to retry Bluetooth."
+            }
+            draft.load(value)
+            applyEnrollment(setup)
+        } catch (e: Exception) { setStatus(e.message ?: "Invalid setup QR code") }
+    }
+
+    private fun applyEnrollment(setup: EnrollmentSetup) {
+        manualOrigin = setup.origin.toString(); manualCode = setup.pairingCode
+        setupOrigin = null; setupLoaded = true; manualExpanded = false; wizardStep = 2
+        status = "QR scanned. Review the website address before connecting."
+        render()
     }
 
     override fun onStart() {
-        super.onStart()
-        foreground = true
-        generation++
-        handler.removeCallbacks(ticker)
-        handler.post(ticker)
-        updateControls()
-        connect()
+        super.onStart(); foreground = true; generation++
+        handler.removeCallbacks(ticker); handler.post(ticker)
+        render(); connections.values.forEach { it.start() }
     }
 
     override fun onStop() {
-        foreground = false
-        generation++
-        permissionAction = null
+        foreground = false; generation++; permissionAction = null
         handler.removeCallbacks(ticker)
-        handler.removeCallbacks(reconnect)
-        disconnect("App left foreground; Bluetooth and phone channel stopped")
-        api.cancelRequests()
-        if (enrolling) statusText.text = "Enrollment interrupted. If the browser shows enrollment, perform an offline server reset before retrying."
-        enrolling = false
-        updateControls()
+        stopBluetooth("App paused. Keep NearKey open to verify logins.")
+        waiting.clear(); activeLogin = null
+        connections.values.forEach { it.stop() }; enrollmentApi.cancelRequests()
+        if (enrolling) status = "Setup interrupted. If the browser shows enrollment, perform an offline server reset before retrying."
+        enrolling = false; render()
         super.onStop()
     }
 
     override fun onDestroy() {
-        foreground = false
-        generation++
-        handler.removeCallbacks(ticker)
-        handler.removeCallbacks(reconnect)
-        disconnect("Activity destroyed")
-        api.close()
+        foreground = false; generation++; handler.removeCallbacks(ticker)
+        stopBluetooth("App closed"); connections.values.forEach { it.close() }; enrollmentApi.close()
         super.onDestroy()
     }
 
-    private fun enrolled() = prefs.getString("token", null) != null
-
-    private fun updateControls() {
-        val needsEnrollment = !enrolled()
-        val canEdit = needsEnrollment && !enrolling
-        urlInput.isEnabled = canEdit
-        codeInput.isEnabled = canEdit
-        enrollmentHelp.visibility = if (needsEnrollment) View.VISIBLE else View.GONE
-        scanButton.visibility = if (needsEnrollment) View.VISIBLE else View.GONE
-        manualButton.visibility = if (needsEnrollment) View.VISIBLE else View.GONE
-        manualInputs.visibility = if (needsEnrollment && manualExpanded) View.VISIBLE else View.GONE
-        setupReview.visibility = if (needsEnrollment && setupLoaded && !manualExpanded) View.VISIBLE else View.GONE
-        enrollButton.visibility = if (needsEnrollment && (setupLoaded || manualExpanded)) View.VISIBLE else View.GONE
-        enrollButton.isEnabled = foreground && canEdit
-        scanButton.isEnabled = foreground && canEdit
-        manualButton.isEnabled = foreground && canEdit
-        manualButton.text = if (manualExpanded) "Hide manual details" else "Enter details manually"
-        setupButton.isEnabled = foreground && enrolled() && !enrolling
-        setupButton.text = if (pending == null) "Advertise setup for 60 seconds" else "Retry pending challenge advertising"
-    }
-
     private fun enroll() {
-        if (!foreground || enrolling || enrolled()) return
+        if (!foreground || enrolling || storageError || wizardStep != 2) return
         try {
-            val origin = api.origin(urlInput.text.toString())
-            val code = codeInput.text.toString().trim()
+            val origin = enrollmentApi.origin(manualOrigin)
+            require(websites.size < 30) { "You can connect up to 30 websites" }
+            require(websites.none { it.origin == origin.toString() }) { "This website is already connected" }
+            val code = manualCode.trim()
             require(code.isNotEmpty() && code.length <= 512 && !code.contains('\n') && !code.contains('\r')) { "Paste a valid pairing code" }
-            key.ensure()
+            // Existing registrations share this non-exportable phone key; never silently replace it.
+            if (websites.isEmpty()) key.ensure() else key.publicKey()
             val publicKey = key.publicKey()
             val request = JSONObject().put("pairingCode", code).put("publicKey", publicKey)
                 .put("label", "Android phone").put("signature", key.sign(Protocol.enrollmentText(code, publicKey)))
-            enrolling = true
-            updateControls()
-            statusText.text = "Enrolling…"
+            enrolling = true; status = "Securely connecting your phone…"; render()
             val epoch = generation
-            api.post(origin, "/api/phones/enroll", request) { result, error -> handler.post {
+            enrollmentApi.post(origin, "/api/phones/enroll", request) { result, error -> handler.post {
                 if (!foreground || generation != epoch) return@post
                 enrolling = false
                 try {
                     check(result != null) { error ?: "Enrollment failed" }
-                    // Reject malformed responses without formatting credential-bearing JSON into an error.
                     val phoneId = requireNotNull(result.opt("phoneId") as? String) { "Invalid enrollment response" }
                     val token = requireNotNull(result.opt("deviceToken") as? String) { "Invalid enrollment response" }
                     require(phoneId.isNotBlank() && phoneId.length <= 128 && token.isNotEmpty() &&
-                        token.length <= 1024 && token.all { it.code in 33..126 }) {
-                        "Invalid enrollment response"
-                    }
-                    check(prefs.edit().putString("origin", origin.toString()).putString("phoneId", phoneId)
-                        .putString("token", token).commit()) { "Cannot save phone credentials" }
-                    urlInput.setText(origin.toString())
-                    codeInput.text.clear()
-                    statusText.text = "Enrolled · ${key.backing()}. Use setup advertising for the first browser chooser."
-                    connect()
+                        token.length <= 1024 && token.all { it.code in 33..126 }) { "Invalid enrollment response" }
+                    val site = ConnectedWebsite(origin.toString(), phoneId, token)
+                    val next = websites + site
+                    store.save(next); websites = next
+                    manualCode = ""; draft.clear(); setupLoaded = false
+                    setupOrigin = site.origin; wizardStep = 3
+                    status = "Website paired. Tap below to connect Bluetooth."
+                    addConnection(site).start()
                 } catch (e: Exception) {
-                    statusText.text = "${e.message ?: "Enrollment failed"}. If the server enrolled this phone but credentials were not saved, an offline server reset is required."
+                    status = "${e.message ?: "Enrollment failed"}. If your browser already shows enrollment, perform an offline server reset before retrying."
                 }
-                updateControls()
+                render()
             } }
-        } catch (e: Exception) { statusText.text = e.message ?: "Enrollment failed" }
+        } catch (e: Exception) { setStatus(e.message ?: "Enrollment failed") }
     }
 
-    private fun connect() {
-        if (!foreground || !enrolled() || socket != null) return
-        handler.removeCallbacks(reconnect)
-        try {
-            // Never generate a replacement key for an already-enrolled credential.
-            key.publicKey()
-            val origin = api.origin(prefs.getString("origin", "")!!)
-            val token = prefs.getString("token", null)!!
-            onlineText.text = "Phone channel: connecting…"
-            socket = api.channel(origin, token, object : WebSocketListener() {
-                override fun onMessage(webSocket: WebSocket, text: String) { handler.post {
-                    if (!foreground || socket !== webSocket) return@post
-                    try {
-                        require(text.length <= 8192) { "Phone message too large" }
-                        val json = JSONObject(text)
-                        when (json.getString("type")) {
-                            "ready" -> {
-                                require(json.getString("phoneId") == prefs.getString("phoneId", null)) { "Phone identity mismatch" }
-                                online = true
-                                reconnectDelay = 1000
-                                onlineText.text = "Phone channel: online (authenticated)"
-                            }
-                            "challenge" -> {
-                                require(online) { "Challenge received before authenticated ready" }
-                                val challenge = Protocol.challenge(json.getJSONObject("challenge"),
-                                    prefs.getString("phoneId", null)!!, System.currentTimeMillis())
-                                if (pending?.id == challenge.id) {
-                                    require(pending == challenge) { "Server changed an immutable challenge" }
-                                    return@post
-                                }
-                                clearChallenge("Previous Bluetooth window closed")
-                                pending = challenge
-                                pendingEnd = SystemClock.elapsedRealtime() + challenge.expiresAt - System.currentTimeMillis()
-                                displayChallenge()
-                                updateControls()
-                                withPermissions { startBluetooth(challenge) }
-                            }
-                            "cancel" -> {
-                                if (pending?.id == json.getString("challengeId")) clearChallenge("Server cancelled/completed the challenge")
-                            }
-                            else -> error("Unsupported phone message")
-                        }
-                    } catch (e: Exception) {
-                        connectionLost(webSocket, e.message ?: "Invalid phone message")
+    private fun addConnection(site: ConnectedWebsite): WebsiteConnection {
+        val connection = WebsiteConnection(site, handler, key,
+            changed = {
+                ui.updateConnections(connectionStates())
+                ui.updateLogin(loginDescription())
+                completeSetupIfReady()
+            }, challengeReceived = ::receiveChallenge,
+            challengeCancelled = { owner, id ->
+                if (waiting[owner.website.origin]?.challenge?.id == id) {
+                    clearLogin(owner, "Login request finished. Ready for the next sign-in.")
+                }
+            }, lost = { owner ->
+                if (setupOrigin == owner.website.origin) {
+                    bluetoothReadyOrigin = null
+                    if (wizardStep == 3) setStatus(owner.status)
+                }
+                clearLogin(owner, "Website connection closed. Reconnect to verify logins.")
+            })
+        connections[site.origin] = connection
+        return connection
+    }
+
+    private fun receiveChallenge(owner: WebsiteConnection, challenge: Challenge) {
+        val previous = waiting[owner.website.origin]
+        if (previous?.challenge?.id == challenge.id) {
+            require(previous.challenge == challenge) { "Server changed an immutable challenge" }
+            return
+        }
+        if (previous != null) clearLogin(owner, "Previous login request closed")
+        waiting[owner.website.origin] = PendingLogin(owner, challenge,
+            SystemClock.elapsedRealtime() + challenge.expiresAt - System.currentTimeMillis())
+        activateNextLogin()
+    }
+
+    private fun activateNextLogin() {
+        if (!foreground || activeLogin != null) return
+        val next = waiting.values.firstOrNull { it.owner.online && it.remaining() > 0 } ?: return
+        activeLogin = next
+        ui.updateLogin(loginDescription())
+        withPermissions { startBluetooth(next) }
+    }
+
+    private fun clearLogin(owner: WebsiteConnection, message: String) {
+        val removed = waiting.remove(owner.website.origin)
+        if (removed != null && activeLogin === removed) {
+            activeLogin = null; stopBluetooth(message)
+            ui.updateLogin(loginDescription()); activateNextLogin()
+        }
+    }
+
+    private fun stopBluetooth(message: String) {
+        val peripheral = ble; ble = null; peripheral?.close()
+        readyInFlight = null; permissionAction = null; bluetoothReadyOrigin = null
+        bluetoothStatus = message
+    }
+
+    private fun setupBluetooth() {
+        if (!foreground || setupOrigin == null) return
+        val site = connections[setupOrigin] ?: return
+        if (activeLogin != null && activeLogin?.owner !== site) {
+            setStatus("Another website is verifying a login. Finish that sign-in, then retry Bluetooth setup.")
+            return
+        }
+        if (!site.online) {
+            setStatus("Connecting to your website. Bluetooth setup will wait for the authenticated connection.")
+            site.retry()
+        }
+        withPermissions { startBluetooth(activeLogin) }
+    }
+
+    private fun startBluetooth(login: PendingLogin?) {
+        if (!foreground || activeLogin !== login || (login == null && setupOrigin == null)) return
+        if (login != null && (!login.owner.online || login.remaining() <= 0)) {
+            clearLogin(login.owner, "Login request expired"); return
+        }
+        if (!hasPermissions()) { withPermissions { startBluetooth(login) }; return }
+        stopBluetooth("Starting Bluetooth…")
+        val setup = setupOrigin
+        lateinit var peripheral: BlePeripheral
+        peripheral = BlePeripheral(this, handler, login?.challenge, key::sign,
+            onReady = {
+                if (foreground && ble === peripheral && activeLogin === login) {
+                    if (login != null) acknowledgeReady(login)
+                    if (setup != null && (login == null || login.owner.website.origin == setup)) {
+                        bluetoothReadyOrigin = setup
+                        completeSetupIfReady()
                     }
-                } }
-                override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
-                    handler.post { connectionLost(webSocket, "Rejected binary phone message") }
                 }
-                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                    webSocket.close(code, null)
-                    handler.post { connectionLost(webSocket, "Phone channel closed") }
+            },
+            onStatus = {
+                if (foreground && ble === peripheral) {
+                    bluetoothStatus = it
+                    if (wizardStep == 3) setStatus(it)
                 }
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    handler.post { connectionLost(webSocket, "Phone channel closed") }
-                }
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    val message = if (response?.code == 401 || response?.code == 403)
-                        "Phone credential rejected; re-enrollment requires offline server reset" else "Phone channel disconnected; reconnecting while foreground"
-                    handler.post { connectionLost(webSocket, message, response?.code != 401 && response?.code != 403) }
+            },
+            onError = {
+                if (foreground && ble === peripheral) {
+                    ble = null; readyInFlight = null; bluetoothReadyOrigin = null
+                    bluetoothStatus = it; setStatus(it)
                 }
             })
-        } catch (e: Exception) {
-            onlineText.text = "Phone channel: offline"
-            statusText.text = e.message ?: "Cannot connect phone channel"
-        }
+        ble = peripheral; peripheral.start()
     }
 
-    private fun connectionLost(ws: WebSocket, message: String, retry: Boolean = true) {
-        if (socket !== ws) return
-        disconnect(message)
-        statusText.text = message
-        if (foreground && enrolled() && retry) {
-            handler.removeCallbacks(reconnect)
-            handler.postDelayed(reconnect, reconnectDelay)
-            reconnectDelay = (reconnectDelay * 2).coerceAtMost(15_000)
-        }
-    }
-
-    private fun disconnect(message: String) {
-        handler.removeCallbacks(reconnect)
-        val old = socket
-        socket = null
-        online = false
-        old?.cancel()
-        clearChallenge(message)
-        onlineText.text = "Phone channel: offline"
-    }
-
-    private fun clearChallenge(message: String) {
-        pending = null
-        pendingEnd = 0
-        readyInFlight = null
-        permissionAction = null
-        val peripheral = ble
-        ble = null
-        peripheral?.close()
-        bleText.text = "Bluetooth: stopped · $message"
-        displayChallenge()
-        updateControls()
-    }
-
-    private fun displayChallenge() {
-        val c = pending
-        challengeText.text = if (c == null) "Ready for a browser login" else {
-            val remaining = minOf(c.expiresAt - System.currentTimeMillis(), pendingEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)
-            "Verifying browser login\nService: ${c.serviceName}\nAccount: ${c.username}\nLogin request: ${c.id}\nRemaining: ${(remaining + 999) / 1000} seconds"
-        }
-    }
-
-    private fun startBluetooth(challenge: Challenge?) {
-        if (!foreground || !enrolled() || pending !== challenge) return
-        if (challenge != null && (!online || System.currentTimeMillis() >= challenge.expiresAt ||
-                SystemClock.elapsedRealtime() >= pendingEnd)) {
-            clearChallenge("No live online challenge")
-            return
-        }
-        if (!hasPermissions()) {
-            withPermissions { startBluetooth(challenge) }
-            return
-        }
-        val old = ble
-        ble = null
-        readyInFlight = null
-        old?.close()
-        lateinit var peripheral: BlePeripheral
-        peripheral = BlePeripheral(this, handler, challenge, key::sign,
-            onReady = { if (foreground && ble === peripheral && pending === challenge && challenge != null) acknowledgeReady(challenge) },
-            onStatus = { if (foreground && ble === peripheral) bleText.text = "Bluetooth: $it" },
-            onError = { if (foreground && ble === peripheral) {
-                ble = null
-                readyInFlight = null
-                bleText.text = "Bluetooth: $it"
-            } })
-        ble = peripheral
-        peripheral.start()
-    }
-
-    private fun acknowledgeReady(challenge: Challenge) {
-        if (!foreground || !online || pending !== challenge || readyInFlight == challenge.id) return
-        if (System.currentTimeMillis() >= challenge.expiresAt || SystemClock.elapsedRealtime() >= pendingEnd) {
-            clearChallenge("Challenge expired")
-            return
-        }
-        val peripheral = ble ?: return
-        val epoch = generation
-        val channel = socket ?: return
-        readyInFlight = challenge.id
+    private fun completeSetupIfReady() {
+        val origin = setupOrigin ?: return
+        if (wizardStep != 3 || bluetoothReadyOrigin != origin || connections[origin]?.online != true) return
         try {
-            val origin = api.origin(prefs.getString("origin", "")!!)
-            api.post(origin, "/api/phone/challenges/${challenge.id}/ready", JSONObject(), prefs.getString("token", null)) { result, error -> handler.post {
-                if (!foreground || generation != epoch || socket !== channel || pending !== challenge ||
-                    ble !== peripheral) return@post
+            val next = websites.map { if (it.origin == origin) it.copy(setupComplete = true) else it }
+            store.save(next); websites = next
+            setupOrigin = null; wizardStep = 0
+            status = "Website connected. Continue in your browser to finish signing in."
+            render()
+        } catch (e: Exception) { setStatus(e.message ?: "Cannot save setup completion. Retry Bluetooth setup.") }
+    }
+
+    private fun acknowledgeReady(login: PendingLogin) {
+        val owner = login.owner
+        if (!foreground || !owner.online || activeLogin !== login || readyInFlight === login) return
+        if (login.remaining() <= 0) { clearLogin(owner, "Login request expired"); return }
+        val peripheral = ble ?: return
+        val epoch = generation; val channel = owner.socket ?: return
+        readyInFlight = login
+        try {
+            owner.api.post(owner.api.origin(owner.website.origin), "/api/phone/challenges/${login.challenge.id}/ready",
+                JSONObject(), owner.website.token) { result, error -> handler.post {
+                if (!foreground || generation != epoch || owner.socket !== channel || activeLogin !== login || ble !== peripheral) return@post
                 readyInFlight = null
-                if (System.currentTimeMillis() >= challenge.expiresAt || SystemClock.elapsedRealtime() >= pendingEnd) {
-                    clearChallenge("Challenge expired")
-                    return@post
-                }
+                if (login.remaining() <= 0) { clearLogin(owner, "Login request expired"); return@post }
                 if (result?.optBoolean("ok") != true) {
-                    // Never leave an unacknowledged challenge signing after an API error.
-                    clearChallenge(error ?: "Server did not acknowledge advertising readiness")
-                    statusText.text = "Readiness failed. Cancel/retry in the browser or reconnect the phone channel."
-                } else statusText.text = "Server acknowledged advertising. Waiting for browser GATT handshake."
+                    clearLogin(owner, error ?: "Readiness failed")
+                    setStatus("Bluetooth could not be confirmed. Cancel and retry in your browser.")
+                } else setStatus("Bluetooth is ready. Waiting for your browser to verify the login.")
             } }
-        } catch (e: Exception) { clearChallenge(e.message ?: "Readiness failed") }
+        } catch (e: Exception) { clearLogin(owner, e.message ?: "Readiness failed") }
     }
 
     private fun hasPermissions(): Boolean = Build.VERSION.SDK_INT < 31 ||
@@ -484,53 +400,50 @@ class MainActivity : ComponentActivity() {
         if (!foreground) return
         if (hasPermissions()) action()
         else {
-            val epoch = generation
-            val challenge = pending
-            val channel = socket
-            permissionAction = {
-                if (foreground && generation == epoch && pending === challenge && socket === channel) action()
-            }
-            bleText.text = "Bluetooth: Nearby devices permission required"
+            val epoch = generation; val login = activeLogin; val setup = setupOrigin
+            permissionAction = { if (foreground && generation == epoch && activeLogin === login && setupOrigin == setup) action() }
+            setStatus("Allow Nearby devices so NearKey can use Bluetooth.")
             if (!permissionRequested) {
                 permissionRequested = true
-                requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE), 1)
+                bluetoothPermissions.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE))
             }
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != 1) return
-        permissionRequested = false
-        val action = permissionAction
-        permissionAction = null
-        if (foreground) {
-            if (hasPermissions()) action?.invoke()
-            else bleText.text = "Bluetooth access denied. Allow Nearby devices in app settings and retry."
-        }
+    private fun websiteDetails(site: ConnectedWebsite) {
+        val connection = connections[site.origin]
+        AlertDialog.Builder(this).setTitle(site.address)
+            .setItems(arrayOf("Retry website connection", "Bluetooth setup", "Connection details", "Forget website")) { _, which ->
+                when (which) {
+                    0 -> connection?.retry()
+                    1 -> { setupOrigin = site.origin; wizardStep = 3; status = ""; render() }
+                    2 -> AlertDialog.Builder(this).setTitle("Connection details")
+                        .setMessage("${site.origin}\n\n${connection?.status ?: "Offline"}\nBluetooth: $bluetoothStatus\n\n${key.backing()}\n\nKeep this app open for automatic verification.")
+                        .setPositiveButton("Done", null).show()
+                    3 -> AlertDialog.Builder(this).setTitle("Forget ${site.address}?")
+                        .setMessage("Removes this website’s local phone credential. Its server enrollment stays in place and needs an offline server reset before you can pair again.")
+                        .setNegativeButton("Keep website", null)
+                        .setPositiveButton("Forget locally") { _, _ -> forget(site) }.show()
+                }
+            }.show()
     }
 
-    private fun reset() {
-        generation++
-        permissionAction = null
-        handler.removeCallbacks(reconnect)
-        disconnect("Local enrollment forgotten")
-        api.cancelRequests()
-        enrolling = false
-        // Attempt both erasures even if one fails; never reconnect during a partial reset.
-        val credentialsErased = try { prefs.edit().clear().commit() } catch (_: Exception) { false }
-        val keyErased = try { key.delete(); true } catch (_: Exception) { false }
-        urlInput.text.clear(); codeInput.text.clear()
-        setupLoaded = false
-        manualExpanded = false
-        setupReview.text = ""
-        val failedParts = listOfNotNull(
-            if (credentialsErased) null else "credential storage",
-            if (keyErased) null else "Keystore"
-        ).joinToString(" and ")
-        statusText.text = if (failedParts.isEmpty())
-            "Local token/key erased. Server phone enrollment is unchanged; offline reset required before enrolling again."
-        else "Local reset incomplete ($failedParts). Retry Forget locally. Server enrollment is unchanged; offline reset is still required."
-        updateControls()
+    private fun forget(site: ConnectedWebsite) {
+        try {
+            val next = websites.filter { it.origin != site.origin }
+            store.save(next); websites = next
+            connections.remove(site.origin)?.close()
+            if (setupOrigin == site.origin) setupOrigin = null
+            if (next.isEmpty()) {
+                stopBluetooth("Website forgotten")
+                wizardStep = 1; draft.clear(); manualOrigin = ""; manualCode = ""
+                setupLoaded = false; manualExpanded = false
+            }
+            status = "Local website registration removed. Its server enrollment is unchanged."
+            if (next.isEmpty()) {
+                try { key.delete() } catch (_: Exception) { status += " The phone key could not be erased." }
+            }
+            render()
+        } catch (e: Exception) { setStatus(e.message ?: "Could not forget this website") }
     }
 }

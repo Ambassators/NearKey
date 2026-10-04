@@ -46,7 +46,7 @@ export class EnrollmentQr {
     try {
       this.container.innerHTML = this.encode(url);
       this.container.hidden = false;
-      this.message.textContent = 'Tap “Scan setup QR code” in the Nearkey Android app, then point your camera here.';
+      this.message.textContent = 'Tap “Scan setup QR code” in the Nearkey Android app, scan here, then tap “Enroll phone” on your phone. This page advances automatically.';
     } catch {
       this.container.replaceChildren();
       this.manual.open = true;

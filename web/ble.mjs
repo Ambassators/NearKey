@@ -161,11 +161,12 @@ export class PhoneBluetooth {
         await this.step(token, () => request.writeValueWithResponse(chunk));
       }
       // Android stores the full proof before acknowledging the final newline write.
-      // readValue uses GATT long reads; do not slice the returned DataView to 20 bytes.
+      // The native stack assembles offset reads into the full characteristic value.
       this.onProgress('Reading phone signature');
       const value = await this.step(token, () => proof.readValue());
       if (token.controller.signal.aborted) throw token.controller.signal.reason;
       if (Date.now() >= challenge.expiresAt) throw new Error('Challenge expired before the phone proof arrived.');
+      this.onProgress(`Phone proof received (${value.byteLength} bytes)`);
       const signature = parseProof(value, challenge.id);
       this.onProgress('Phone signature received');
       return signature;
@@ -215,6 +216,14 @@ export class PhoneBluetooth {
 
   cancel() {
     if (this.active) this.abort(this.active, 'Bluetooth attempt cancelled.');
+  }
+
+  forget() {
+    this.cancel();
+    try { this.device?.gatt?.disconnect(); } catch { /* native connection already closed */ }
+    this.device = null;
+    this.deviceId = null;
+    try { this.storage?.removeItem(DEVICE_KEY); } catch { /* unavailable browser storage */ }
   }
 
   release(token) {

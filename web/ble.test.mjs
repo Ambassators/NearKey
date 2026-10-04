@@ -22,8 +22,22 @@ function proofView(proof) {
 }
 function storage(initial = null) {
   const values = new Map(initial ? [['nearkey.bluetoothDeviceId', initial]] : []);
-  return {values, getItem: k => values.get(k), setItem: (k, v) => values.set(k, v)};
+  return {values, getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k)};
 }
+
+test('changing the enrolled phone discards the old Bluetooth choice and requires a fresh chooser', async () => {
+  const remembered = storage('old-phone');
+  let disconnected = false;
+  const transport = new PhoneBluetooth({secure: true, storage: remembered,
+    bluetooth: {requestDevice() {}, getDevices: async () => [{id: 'old-phone'}]}});
+  transport.device = {id: 'old-phone', gatt: {disconnect() { disconnected = true; }}};
+  transport.forget();
+  assert.equal(disconnected, true);
+  assert.equal(transport.device, null);
+  assert.equal(transport.deviceId, null);
+  assert.equal(remembered.getItem('nearkey.bluetoothDeviceId'), undefined);
+  await assert.rejects(transport.remembered({controller: new AbortController(), pending: new Set()}), /No remembered/);
+});
 function phone(c, options = {}) {
   const device = new EventTarget();
   device.id = 'permitted-phone';
