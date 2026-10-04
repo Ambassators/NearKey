@@ -8,9 +8,9 @@ export function hostedConfig(env = process.env) {
   }
   validateOrigin(env.PUBLIC_ORIGIN);
   if (!env.PUBLIC_ORIGIN.startsWith('https://')) throw new Error('Hosted NearKey requires an HTTPS PUBLIC_ORIGIN');
-  if (env.DEMO_PASSWORD.length < 16 || env.DEMO_PASSWORD.length > 256
+  if (env.DEMO_PASSWORD.length > 256
       || env.DEMO_PASSWORD === 'mint-river-otter-47') {
-    throw new Error('Set a new DEMO_PASSWORD containing 16–256 characters');
+    throw new Error('Set a new DEMO_PASSWORD containing 1–256 characters');
   }
   return {publicOrigin: env.PUBLIC_ORIGIN, phoneOrigin: env.PUBLIC_ORIGIN,
     username: env.DEMO_USERNAME, password: env.DEMO_PASSWORD,

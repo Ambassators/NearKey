@@ -53,7 +53,7 @@ Create an Upstash Redis database and set the production environment variables
 listed in [.env.example](.env.example): `PUBLIC_ORIGIN`, `DEMO_USERNAME`,
 `DEMO_PASSWORD`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, and
 `NEARKEY_STATE_KEY`. Use the stable HTTPS production origin without a trailing
-slash, a new password of at least 16 characters, and the read-write Redis REST
+slash, a new nonempty demo password, and the read-write Redis REST
 token. Keep preview deployments on a separate state key.
 
 Deploy after saving the settings, open the production website and enroll the

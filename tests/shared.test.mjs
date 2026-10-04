@@ -286,7 +286,7 @@ test('hosted configuration requires explicit HTTPS, a new password and shared st
   for (const key of Object.keys(env)) assert.throws(() => hostedConfig({...env, [key]: ''}));
   assert.throws(() => hostedConfig({...env, PUBLIC_ORIGIN: 'http://localhost:5173'}));
   assert.throws(() => hostedConfig({...env, DEMO_PASSWORD: 'mint-river-otter-47'}));
-  assert.throws(() => hostedConfig({...env, DEMO_PASSWORD: 'short'}));
+  assert.equal(hostedConfig({...env, DEMO_PASSWORD: 'short'}).password, 'short');
   assert.throws(() => hostedConfig({...env, UPSTASH_REDIS_REST_URL: 'http://redis.example'}));
 });
 
