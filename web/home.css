@@ -129,18 +129,6 @@ html:has(.home:not([hidden])) { scroll-behavior: smooth; }
   color: var(--home-ink-soft);
 }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-top: 32px; }
-.hero-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 40px;
-  color: var(--home-ink-soft);
-  font-size: 13.5px;
-  font-variant-numeric: tabular-nums;
-}
-.hero-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #b7c3b9; transition: background .3s, box-shadow .3s; }
-.hero-status[data-state="flight"] .hero-status-dot { background: #7fb393; box-shadow: 0 0 0 4px #d9f1c7; }
-.hero-status[data-state="verified"] .hero-status-dot { background: #32864b; box-shadow: 0 0 0 4px #d9f1c7; }
 .hero-scene { min-width: 0; }
 .home .scene {
   display: block;
@@ -422,7 +410,6 @@ html:has(.home:not([hidden])) { scroll-behavior: smooth; }
 @media (max-width: 540px) {
   .home { font-size: 16px; }
   .hero { padding-top: 32px; }
-  .hero-status { margin-top: 32px; }
   .flow-steps { grid-template-columns: 1fr; }
   .flow-steps::before, .flow-steps::after {
     display: block;

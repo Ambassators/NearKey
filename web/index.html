@@ -44,12 +44,11 @@
               <span class="line"><span>Your phone</span></span>
               <span class="line"><span>is the key.</span></span>
             </h1>
-            <p class="hero-lede"><strong>No codes to type.</strong> NearKey is a two‑factor provider that uses the Android phone already in your pocket. Enter your password; the phone nearby signs the login over Bluetooth and your browser relays the proof. No SMS, no six digits, no app‑switching.</p>
+            <p class="hero-lede"><strong>No codes to type.</strong> NearKey is a two‑factor provider that uses the phone already in your pocket. Enter your password; the phone nearby signs the login over Bluetooth and your browser relays the proof. No SMS, no six digits, no app‑switching.</p>
             <div class="hero-actions">
               <a class="home-button" href="#/login">Try the demo <svg aria-hidden="true"><use href="#icon-arrow"/></svg></a>
               <a class="home-link" href="#how-it-works">See how a login happens</a>
             </div>
-            <p id="hero-status" class="hero-status" data-state="waiting" aria-live="off"><span class="hero-status-dot" aria-hidden="true"></span><span id="hero-status-text">Waiting for a login challenge</span></p>
           </div>
           <div class="hero-scene" aria-hidden="true">
             <svg class="scene" viewBox="20 -52 648 572" xmlns="http://www.w3.org/2000/svg">
@@ -128,7 +127,7 @@
               <li class="flow-step">
                 <span class="flow-number" aria-hidden="true">3</span>
                 <h3>Signature</h3>
-                <p>Your phone signs the challenge with a key that never leaves AndroidKeyStore, then advertises the proof over Bluetooth LE.</p>
+                <p>Your phone signs the challenge with a key that stays in your phone’s secure storage, then advertises the proof over Bluetooth LE.</p>
               </li>
               <li class="flow-step">
                 <span class="flow-number" aria-hidden="true">4</span>
@@ -161,7 +160,7 @@
                 <ul>
                   <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Distance.</strong> Bluetooth LE doesn't measure proximity or stop a relay attack.</li>
                   <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Consent.</strong> Signatures are automatic in this demo; explicit phone approval is deferred.</li>
-                  <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Hardware backing.</strong> Keys are non‑exportable in AndroidKeyStore, but a secure element isn't guaranteed.</li>
+                  <li><svg aria-hidden="true"><use href="#icon-minus"/></svg><strong>Hardware backing.</strong> Key protection depends on the device; a secure element isn't guaranteed.</li>
                 </ul>
               </div>
             </div>
@@ -195,7 +194,7 @@
               <h2 id="phone-title">The authenticator lives on the phone you already carry.</h2>
               <p>Enroll once: the browser shows a setup QR, you scan it in <strong>NearKey Authenticator</strong>, review the server address and tap <em>Enroll phone</em>. From then on, verification runs in the background whenever a login is pending.</p>
               <ul class="companion-facts">
-                <li>Private key generated and kept in AndroidKeyStore; only the public key leaves the phone.</li>
+                <li>Private key generated and kept in your phone’s secure storage; only the public key leaves the phone.</li>
                 <li>Pairing survives server restarts. Sessions and app lists are reset on purpose.</li>
                 <li>Replace a phone from the dashboard: the old one stays enrolled until the new one finishes.</li>
               </ul>
@@ -206,9 +205,9 @@
         <section class="closing" aria-labelledby="closing-title">
           <div class="closing-inner" data-reveal>
             <h2 id="closing-title">Try it in two minutes.</h2>
-            <p>Sign in with the demo account, enroll an Android phone, and watch the key land.</p>
+            <p>Sign in with the demo account, enroll a phone, and watch the key land.</p>
             <a class="home-button home-button-large" href="#/login">Open the demo <svg aria-hidden="true"><use href="#icon-arrow"/></svg></a>
-            <p class="closing-fineprint">Demo scope: Mac Chromium with Web Bluetooth, one account, one Android phone with BLE advertising. Credentials are in the README.</p>
+            <p class="closing-fineprint">Demo scope: Mac Chromium with Web Bluetooth, one account, one phone with BLE advertising. Credentials are in the README.</p>
           </div>
         </section>
 
@@ -360,7 +359,7 @@
         <section class="dashboard-authenticator" aria-label="Your authenticator">
           <span class="mini-icon" aria-hidden="true"><svg><use href="#icon-phone"/></svg></span>
           <div class="authenticator-info">
-            <strong id="dashboard-phone-name">Android phone</strong>
+            <strong id="dashboard-phone-name">Phone</strong>
           </div>
           <span id="dashboard-phone-status" class="badge">Enrolled</span>
           <button id="dashboard-replace-phone-button" class="text-button dashboard-replace-phone-button" type="button">Change phone</button>

@@ -18,3 +18,9 @@ android/local.properties
 Nearkey/
 rowdyhacks/
 output/
+
+ios/.build/
+ios/build/
+ios/.swiftpm/
+ios/**/xcuserdata/
+*.ipa

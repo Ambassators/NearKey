@@ -31,7 +31,7 @@ export class ChallengeFlow {
       attempted: false, attempting: false, polling: false, pollTimer: null, deadline: null};
     this.run = run;
     this.state = {challenge: immutable, phase: 'waiting', phoneReady: false,
-      message: 'Keep the Android app open and your phone nearby.', receipt: null};
+      message: 'Keep the NearKey app open and your phone nearby.', receipt: null};
     if (Date.now() < immutable.expiresAt) {
       run.deadline = setTimeout(() => this.finish(run, 'expired'), immutable.expiresAt - Date.now());
     }
@@ -75,7 +75,7 @@ export class ChallengeFlow {
       this.update(run, {phoneReady: run.ready,
         ...(this.state.phase === 'waiting' ? {message: run.ready
           ? 'Connecting over Bluetooth…'
-          : 'Keep the Android app open and your phone nearby.'} : {}),
+          : 'Keep the NearKey app open and your phone nearby.'} : {}),
       });
       if (run.ready && !run.attempted) void this.attempt(run);
     } catch (error) {

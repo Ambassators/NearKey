@@ -52,7 +52,7 @@ export class EnrollmentQr {
     } catch {
       this.container.replaceChildren();
       this.manual.open = true;
-      this.message.textContent = 'The QR code could not be displayed. Enter the details below in your Android app.';
+      this.message.textContent = 'The QR code could not be displayed. Enter the details below in the NearKey app.';
     }
   }
 }

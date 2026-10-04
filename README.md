@@ -4,6 +4,8 @@
 
 NearKey is a two-factor authentication provider demo. Its setup wizard guides you through password sign-in, Android phone enrollment and Bluetooth verification. The dashboard then shows your saved app list.
 
+**Continue with Google** instantly opens a browser-only demo dashboard, without Google OAuth, credentials, Bluetooth, or a server request. The demo session and its app list survive refreshes in the same tab when browser storage is available. Signing out ends the demo session; demo apps remain available for the next Google demo sign-in in that tab.
+
 A correct password opens a pending login. The provider dashboard and account API stay locked until the phone completes the Bluetooth factor. On the first login, enroll your phone and grant browser Bluetooth permission before verification.
 
 The browser has three pages: `#/login` for the password, `#/loading` for phone enrollment and Bluetooth authentication, and `#/dashboard` for the verified account and app list. Refreshing resumes the server-confirmed step; changing the route cannot skip verification.
@@ -65,6 +67,11 @@ phone using its new QR code. Local phone pairing is not imported. Hosted session
 and apps survive deployments; local mode still resets them on restart.
 
 ## Build the phone app
+
+The native iPhone app is in [ios/](ios/README.md). It uses the iPhone Secure
+Enclave and the same v2 Bluetooth protocol. See its setup guide, or run
+`./ios/tools/install.sh` with one unlocked iPhone connected after configuring
+your Apple development account in Xcode. Keep NearKey open during iPhone sign-in.
 
 Use JDK 17 or 21 and an Android SDK containing `platforms/android-37.0` and
 `build-tools/37.0.0`. Set `JAVA_HOME` and `ANDROID_HOME` to those installations.

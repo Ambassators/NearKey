@@ -7,12 +7,6 @@ const FLIGHT = 1050;
 const LAND = WIND_UP + FLIGHT;
 const RESET_AT = LAND + 1900;
 const HOME = {translateX: 115, translateY: 350};
-const STATUS = {
-  challenge: ['waiting', 'Login challenge received · 60 second window'],
-  flight: ['flight', 'Phone signed the challenge · relaying over Bluetooth'],
-  verified: ['verified', 'Signature verified once · your apps are open'],
-  idle: ['waiting', 'Waiting for the next login'],
-};
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 export class Homepage {
@@ -26,15 +20,13 @@ export class Homepage {
     this.timerId = null;
     this.observer = null;
     const q = selector => root.querySelector(selector);
-    this.status = q('#hero-status');
-    this.statusText = q('#hero-status-text');
     this.topbar = document.getElementById('topbar');
     this.flow = q('.flow');
     this.steps = [...root.querySelectorAll('.flow-step')];
     this.deviceTimer = q('#device-timer');
     this.parts = {
       title: [...root.querySelectorAll('.hero-title .line > span')],
-      copy: [q('.hero-lede'), q('.hero-actions'), q('.hero-status')],
+      copy: [q('.hero-lede'), q('.hero-actions')],
       phone: q('.hs-phone'), laptop: q('.hs-laptop'), arc: q('.hs-arc'), trail: q('.hs-trail'), flight: q('.hs-flight'),
       key: q('.hs-key'), inner: q('.hs-key-inner'), rings: [...root.querySelectorAll('.hs-ring')],
       lock: q('.hs-lock'), shackle: q('.hs-shackle'), check: q('.hs-check'), signin: q('.hs-signin'),
@@ -44,11 +36,6 @@ export class Homepage {
     this.loop = this.reduced ? null : this.buildLoop();
   }
 
-  setStatus([state, text]) {
-    this.status.dataset.state = state;
-    this.statusText.textContent = text;
-  }
-
   buildLoop() {
     const {key, inner, phone, laptop, rings, lock, shackle, check, signin, apps, rows} = this.parts;
     const trail = svg.createDrawable(this.parts.trail);
@@ -56,14 +43,12 @@ export class Homepage {
     utils.set(key, {...HOME, opacity: 1});
     utils.set(inner, {scale: 1, rotate: 0});
     return createTimeline({loop: true, loopDelay: 420, autoplay: false, defaults: {ease: 'outQuart'}})
-      .call(() => this.setStatus(STATUS.challenge), 0)
       // The phone notices the challenge: rings ripple out, the key tenses.
       .add(rings, {scale: [.45, 1.9], opacity: [.75, 0], duration: 1200, delay: stagger(170), ease: 'outQuad'}, 0)
       .add(inner, {scale: [1, 1.14], rotate: [0, -28], duration: 260, ease: 'outQuad'}, 0)
       .add(phone, {rotate: [0, -5], duration: 220, ease: 'outQuad'}, 60)
       .add(phone, {rotate: 0, duration: 460}, WIND_UP)
       // Flight along the dotted arc with one full spin and a drawn trail.
-      .call(() => this.setStatus(STATUS.flight), WIND_UP)
       .add(key, {translateX: flight.translateX, translateY: flight.translateY, duration: FLIGHT, ease: 'inOutSine'}, WIND_UP)
       .add(inner, {scale: 1, rotate: 332, duration: FLIGHT, ease: 'inOutSine'}, WIND_UP)
       .add(trail, {opacity: [0, .9], duration: 160, ease: 'outQuad'}, WIND_UP)
@@ -81,9 +66,7 @@ export class Homepage {
       .add(signin, {opacity: 0, duration: 200}, LAND + 220)
       .add(apps, {opacity: 1, duration: 240}, LAND + 340)
       .add(rows, {translateX: [-10, 0], opacity: [0, 1], duration: 520, delay: stagger(70)}, LAND + 360)
-      .call(() => this.setStatus(STATUS.verified), LAND + 320)
       // Reset: the card locks again and the key reappears on the phone.
-      .call(() => this.setStatus(STATUS.idle), RESET_AT)
       .add(apps, {opacity: 0, duration: 240}, RESET_AT)
       .add(check, {opacity: 0, duration: 200}, RESET_AT)
       .add(signin, {opacity: 1, duration: 260}, RESET_AT + 200)
@@ -129,7 +112,6 @@ export class Homepage {
     utils.set(check, {opacity: 1});
     utils.set(signin, {opacity: 0});
     utils.set([apps, ...rows], {opacity: 1});
-    this.setStatus(STATUS.verified);
     this.flow.style.setProperty('--progress', '1');
     for (const step of this.steps) step.dataset.lit = 'true';
   }

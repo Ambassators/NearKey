@@ -1,9 +1,13 @@
-import {api} from './api.mjs';
+import {api as serverApi} from './api.mjs';
+import {DemoSession} from './demo-session.mjs';
 import {PhoneBluetooth} from './ble.mjs';
 import {ChallengeFlow} from './challenge.mjs';
 import {EnrollmentQr} from './enrollment.mjs';
 
 const $ = id => document.getElementById(id);
+const demoSession = new DemoSession();
+const api = (path, options) => demoSession.active ? demoSession.request(path, options) : serverApi(path, options);
+const phoneLabel = (label, fallback) => label === 'Android phone' ? 'Phone' : label || fallback;
 const diagnostics = {transport: 'Idle', observed: new Map(), challenge: null, startedAt: null, endedAt: null};
 const bluetooth = new PhoneBluetooth({onProgress: stage => {
   diagnostics.transport = stage;
@@ -136,9 +140,9 @@ function renderDebug() {
   if (!$('debug-session')) return;
   const state = flow.state;
   const phone = account?.phone || session?.setup?.phone;
-  const sessionStatus = account ? 'Both factors verified' : session?.pending ? 'Password accepted · 2FA pending'
+  const sessionStatus = demoSession.active ? 'Google demo session' : account ? 'Both factors verified' : session?.pending ? 'Password accepted · 2FA pending'
     : loginBusy ? 'Checking session' : 'Password required';
-  const phoneStatus = phone ? `${phone.label || 'Enrolled phone'} · ${phone.online ? 'server online' : 'server offline'}` : 'Not enrolled in this session';
+  const phoneStatus = phone ? `${phoneLabel(phone.label, 'Enrolled phone')} · ${phone.online ? 'server online' : 'server offline'}` : 'Not enrolled in this session';
   $('debug-session').textContent = sessionStatus;
   $('debug-phone').textContent = phoneStatus;
   observeDebug('session', sessionStatus, `Session: ${sessionStatus}`);
@@ -249,7 +253,7 @@ function syncHomepage(visible) {
   homepage?.then(page => page?.[visible ? 'show' : 'hide']());
 }
 
-// Routes describe server-confirmed access; changing a URL never grants a factor.
+// Routes reflect the current session; changing a URL never creates a session.
 function renderPage(pending) {
   const page = homeRoutes.has(location.hash) ? 'home'
     : restoringSession ? 'loading' : account ? 'dashboard' : pending ? 'loading' : 'login';
@@ -299,7 +303,8 @@ function renderControls() {
   $('credentials-panel').hidden = pending;
   $('factor-panel').hidden = !pending;
   $('login-button').disabled = loginBusy;
-  $('google-signin').disabled = $('apple-signin').disabled = loginBusy;
+  $('google-signin').disabled = false;
+  $('apple-signin').disabled = loginBusy;
   $('login-button').firstChild.textContent = loginBusy ? 'Signing in… ' : 'Continue ';
   $('username').disabled = loginBusy;
   $('password').disabled = loginBusy;
@@ -339,6 +344,7 @@ function renderControls() {
   $('replace-phone-button').hidden = !pending || !phone;
   $('replace-phone-button').disabled = chooserBusy || bluetooth.busy || replacementBusy;
   $('dashboard-replace-phone-button').disabled = !account || appBusy || replacementBusy;
+  $('dashboard-replace-phone-button').hidden = demoSession.active;
   $('replace-phone-confirm').disabled = $('replace-phone-close').disabled = replacementBusy;
   $('replacement-refresh').disabled = $('replacement-cancel').disabled = replacementBusy;
   replacementQr.render(account ? replacementPairing : null, replacementPairing?.origin || location.origin);
@@ -359,12 +365,12 @@ function renderSession() {
     notice();
   }
   $('factor-title').textContent = phone ? 'Verify phone' : 'Connect your phone';
-  $('setup-phone-name').textContent = phone?.label || 'Add your Android phone';
+  $('setup-phone-name').textContent = phoneLabel(phone?.label, 'Add your phone');
   $('phone-status').textContent = phone?.online ? 'Connected' : 'Offline';
   $('setup-phone-dot').style.opacity = phone?.online ? '1' : '.3';
   $('permission-description').textContent = phone?.online
-    ? 'Keep the Android app open and your phone nearby.'
-    : 'Open the Android app. Tap “Advertise setup for 60 seconds” to connect.';
+    ? 'Keep the NearKey app open and your phone nearby.'
+    : 'Open the NearKey app. Tap “Advertise setup for 60 seconds” to connect.';
   tick();
 }
 
@@ -391,8 +397,8 @@ function appItem(app) {
 
 function renderAccount() {
   if (!account) return;
-  $('dashboard-phone-name').textContent = account.phone?.label || 'Phone key';
-  $('dashboard-phone-status').textContent = account.phone?.online ? 'Online' : 'Enrolled';
+  $('dashboard-phone-name').textContent = demoSession.active ? 'Google demo' : phoneLabel(account.phone?.label, 'Phone key');
+  $('dashboard-phone-status').textContent = demoSession.active ? 'Signed in' : account.phone?.online ? 'Online' : 'Enrolled';
   const apps = account.apps || [];
   const nextKey = JSON.stringify(apps);
   if (appsKey !== nextKey) {
@@ -444,7 +450,7 @@ async function enterDashboard() {
 
 function schedulePoll(currentEpoch) {
   clearTimeout(pollTimer);
-  if (session?.pending || account) pollTimer = setTimeout(() => void poll(currentEpoch), 3000);
+  if (!demoSession.active && (session?.pending || account)) pollTimer = setTimeout(() => void poll(currentEpoch), 3000);
 }
 
 async function poll(currentEpoch) {
@@ -553,11 +559,19 @@ async function startChallenge() {
 }
 
 // User actions: Bluetooth selection stays inside a fresh click activation.
-for (const [id, provider] of [['google-signin', 'Google'], ['apple-signin', 'Apple']]) {
-  $(id).addEventListener('click', () => {
-    if (!loginBusy) notice(`${provider} sign-in isn’t available in this demo.`);
-  });
-}
+$('google-signin').addEventListener('click', () => {
+  resetLifetime();
+  loginBusy = false;
+  session = demoSession.signIn();
+  account = demoSession.account();
+  $('password').value = '';
+  notice();
+  renderAccount();
+  $('dashboard-title').focus({preventScroll: true});
+});
+$('apple-signin').addEventListener('click', () => {
+  if (!loginBusy) notice('Apple sign-in isn’t available in this demo.');
+});
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   if (loginBusy || session?.pending || account) return;
@@ -857,7 +871,7 @@ $('choose-button').addEventListener('click', async () => {
     selected = true;
     notice(`Bluetooth access granted for ${device.name || 'your phone'}. Its login signature still needs to be verified.`);
   } catch (error) {
-    if (epoch === currentEpoch) notice(error.name === 'NotFoundError' ? 'No phone selected. Start its setup advertisement in the Android app and choose again.' : error.message);
+    if (epoch === currentEpoch) notice(error.name === 'NotFoundError' ? 'No phone selected. Start its setup advertisement in the NearKey app and choose again.' : error.message);
   } finally {
     if (epoch === currentEpoch) chooserBusy = false;
     renderControls();

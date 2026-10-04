@@ -6,6 +6,7 @@ import {PhoneBluetooth} from './ble.mjs';
 import {ChallengeFlow} from './challenge.mjs';
 import {EnrollmentQr} from './enrollment.mjs';
 import {CONTRACT_VERSION} from '../shared/protocol.mjs';
+import {DemoSession} from './demo-session.mjs';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -60,6 +61,9 @@ async function pairingPage(t, scene = null) {
     Date: class extends Date { static now() { return state.clock; } }, console,
     WebSocket: TestSocket,
     TestKeyToss: class { constructor() { return scene; } },
+    DemoSession: class extends DemoSession {
+      constructor() { super({getItem: () => null, setItem() {}}); }
+    },
     setTimeout: (fn, delay) => { const id = ++nextTimer; timers.set(id, {fn, delay}); return id; },
     clearTimeout: id => timers.delete(id), setInterval: () => 1, clearInterval() {},
     PhoneBluetooth: class extends PhoneBluetooth {
@@ -68,7 +72,7 @@ async function pairingPage(t, scene = null) {
     EnrollmentQr: class extends EnrollmentQr {
       constructor(options) { super({...options, encode: () => '<svg></svg>'}); }
     },
-    api: async path => {
+    serverApi: async path => {
       if (state.offline) throw new Error('Server offline');
       if (path === '/api/session') return {pending: state.pending, authenticated: state.authenticated, setup: {phone: state.phone}};
       if (path === '/api/account') {
@@ -98,6 +102,35 @@ async function pairingPage(t, scene = null) {
     },
   };
 }
+
+test('Google opens the demo dashboard synchronously while the server is offline', async t => {
+  const page = await pairingPage(t);
+  page.state.offline = true;
+  page.elements.get('google-signin').listeners.get('click')();
+  assert.equal(page.elements.get('dashboard-view').hidden, false);
+  assert.equal(page.elements.get('auth-view').hidden, true);
+  assert.equal(page.elements.get('dashboard-phone-status').textContent, 'Signed in');
+  assert.equal(page.elements.get('dashboard-replace-phone-button').hidden, true);
+  assert.equal(page.state.accountRequests, 0, 'demo entry never requests protected account data');
+  assert.equal(page.sockets[0].readyState, 3, 'pending enrollment is cancelled');
+  await page.elements.get('logout').listeners.get('click')();
+  assert.equal(page.elements.get('login-view').hidden, false, 'sign-out works offline');
+  assert.equal(vm.runInContext('demoSession.active', page.context), false);
+});
+
+test('Google remains available during session restoration and ignores its late response', async t => {
+  const page = await pairingPage(t);
+  vm.runInContext('signOutLocally(); restoringSession = true;', page.context);
+  let finish;
+  page.context.serverApi = () => new Promise(resolve => { finish = resolve; });
+  const restoring = vm.runInContext('boot()', page.context);
+  assert.equal(page.elements.get('google-signin').disabled, false);
+  page.elements.get('google-signin').listeners.get('click')();
+  assert.equal(page.elements.get('dashboard-view').hidden, false);
+  finish({authenticated: false, pending: false});
+  await restoring;
+  assert.equal(page.elements.get('dashboard-view').hidden, false, 'a stale restoration cannot undo demo sign-in');
+});
 
 test('a dropped pairing channel replaces the QR automatically and ignores stale socket events', async t => {
   const page = await pairingPage(t);
@@ -284,7 +317,10 @@ test('phone coming online during selection waits for the chooser before starting
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     PhoneBluetooth: TestBluetooth, ChallengeFlow,
     EnrollmentQr: class {render() {} clear() {}},
-    api: async path => {
+    DemoSession: class extends DemoSession {
+      constructor() { super({getItem: () => null, setItem() {}}); }
+    },
+    serverApi: async path => {
       if (path === '/api/session') return {pending: true, setup: {phone: {...phone}}};
       if (path === '/api/challenges') {
         challenges++;
