@@ -6,11 +6,11 @@ export function validateChallenge(challenge) {
   if (challenge?.v !== CONTRACT_VERSION || typeof challenge.id !== 'string' || !challenge.id
       || typeof challenge.phoneId !== 'string' || !challenge.phoneId
       || typeof challenge.nonce !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge.nonce)
-      || !Number.isSafeInteger(challenge.expiresAt)
-      || typeof challenge.operation?.recipientId !== 'string'
-      || typeof challenge.operation?.recipientName !== 'string'
+      || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt <= 0
+      || typeof challenge.operation?.recipientId !== 'string' || !challenge.operation.recipientId
+      || typeof challenge.operation?.recipientName !== 'string' || !challenge.operation.recipientName
       || !Number.isSafeInteger(challenge.operation?.amountCents) || challenge.operation.amountCents <= 0
-      || typeof challenge.operation?.note !== 'string') {
+      || typeof challenge.operation?.note !== 'string' || challenge.operation.note.length > 120) {
     throw new Error('Server returned an invalid version 1 challenge. No Bluetooth request was sent.');
   }
   return Object.freeze({...challenge, operation: Object.freeze({...challenge.operation})});
@@ -28,18 +28,19 @@ export class ChallengeFlow {
     const immutable = validateChallenge(challenge);
     this.dispose();
     const run = {challenge: immutable, controller: new AbortController(), ready: false,
-      attempted: false, attempting: false, pollTimer: null, deadline: null};
+      attempted: false, attempting: false, polling: false, pollTimer: null, deadline: null};
     this.run = run;
     this.state = {challenge: immutable, phase: 'waiting', phoneReady: false,
       message: 'Delivering the server challenge to your foreground phone app.', receipt: null};
+    if (Date.now() < immutable.expiresAt) {
+      run.deadline = setTimeout(() => this.finish(run, 'expired'), immutable.expiresAt - Date.now());
+    }
     this.emit();
-    if (Date.now() >= immutable.expiresAt) return this.finish(run, 'expired');
-    run.deadline = setTimeout(() => this.finish(run, 'expired'), immutable.expiresAt - Date.now());
-    void this.poll(run);
+    if (this.live(run)) void this.poll(run);
   }
 
   live(run) {
-    if (this.run !== run || run.controller.signal.aborted) return false;
+    if (!run || this.run !== run || run.controller.signal.aborted) return false;
     if (Date.now() >= run.challenge.expiresAt) {
       this.finish(run, 'expired');
       return false;
@@ -51,11 +52,15 @@ export class ChallengeFlow {
 
   update(run, changes) {
     if (!this.live(run)) return;
-    this.state = {...this.state, ...changes};
+    this.state = {...this.state, ...changes, challenge: run.challenge};
     this.emit();
   }
 
   async poll(run) {
+    if (!this.live(run) || run.polling) return;
+    clearTimeout(run.pollTimer);
+    run.pollTimer = null;
+    run.polling = true;
     try {
       const data = await this.api(`/api/challenges/${encodeURIComponent(run.challenge.id)}`, {signal: run.controller.signal});
       if (!this.live(run)) return;
@@ -79,7 +84,13 @@ export class ChallengeFlow {
       }
       this.update(run, {message: `${error.message} Status checks will retry until expiry.`});
     } finally {
-      if (this.live(run)) run.pollTimer = setTimeout(() => void this.poll(run), this.pollMs);
+      run.polling = false;
+      if (this.live(run)) {
+        run.pollTimer = setTimeout(() => {
+          run.pollTimer = null;
+          void this.poll(run);
+        }, this.pollMs);
+      }
     }
   }
 
