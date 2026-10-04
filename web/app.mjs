@@ -17,7 +17,21 @@ let chooserBusy = false;
 let recipientKey = '';
 let ledgerKey = '';
 
-const flow = new ChallengeFlow({api, bluetooth, onChange: renderChallenge, onSessionLost: () => {
+const flow = new ChallengeFlow({api, bluetooth, onChange: async state => {
+  renderChallenge(state);
+  if (state?.phase !== 'approved' || !account) return;
+  const currentEpoch = epoch;
+  try {
+    const result = await api('/api/account', {signal: lifetime.signal});
+    if (epoch !== currentEpoch) return;
+    account = result;
+    renderAccount();
+  } catch (error) {
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401) return flow.onSessionLost();
+    notice(`Transfer approved. ${error.message} Balance and ledger will retry shortly.`);
+  }
+}, onSessionLost: () => {
   signOutLocally();
   notice('Your session ended. Sign in again.');
 }});
@@ -199,7 +213,7 @@ function renderChallenge(state) {
   $('challenge-cents').textContent = String(challenge.operation.amountCents);
   $('challenge-expires').textContent = `${new Date(challenge.expiresAt).toISOString()} (${challenge.expiresAt})`;
   $('delivery-status').textContent = flow.run ? state.phoneReady
-    ? 'Phone delivery: ready · advertising for the remaining challenge lifetime.'
+    ? 'Phone delivery: ready · the phone started advertising this challenge.'
     : 'Phone delivery: waiting for advertisement readiness.' : 'Bluetooth attempt closed. Balance and ledger come from the bank server.';
   $('receipt').hidden = !receipt;
   if (receipt) {
@@ -313,7 +327,12 @@ $('choose-button').addEventListener('click', async () => {
 
 $('transfer-form').addEventListener('submit', async event => {
   event.preventDefault();
-  if (transferBusy || flow.state || !account?.phone?.online) return;
+  if (transferBusy || flow.state || !account?.phone?.online || chooserBusy || bluetooth.busy) return;
+  const problem = bluetooth.availability();
+  if (problem || !bluetooth.deviceId) {
+    notice(problem || 'Choose your enrolled phone to enable browser Bluetooth permission first.');
+    return;
+  }
   const currentEpoch = epoch;
   transferBusy = true;
   notice();
@@ -326,16 +345,40 @@ $('transfer-form').addEventListener('submit', async event => {
     if (result.status !== 'waiting_phone') throw new Error('Server returned an unexpected challenge status.');
     flow.start(result.challenge);
   } catch (error) {
-    if (epoch === currentEpoch) notice(error.message);
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401) return flow.onSessionLost();
+    notice(error.message);
   } finally {
     if (epoch === currentEpoch) transferBusy = false;
     renderControls();
   }
 });
 
-$('reconnect-button').addEventListener('click', () => void flow.retry());
-$('cancel-button').addEventListener('click', () => void flow.cancel());
+$('reconnect-button').addEventListener('click', () => {
+  if (!flow.run || flow.state?.phase !== 'reconnect' || !flow.state.phoneReady || bluetooth.busy) return;
+  notice();
+  // Keep the chooser call in this fresh user activation.
+  void flow.retry();
+});
+$('cancel-button').addEventListener('click', async () => {
+  if (!flow.run) return;
+  const currentEpoch = epoch;
+  await flow.cancel();
+  if (epoch !== currentEpoch || !account) return;
+  try {
+    // A completion already sent may win the cancellation race; only the bank knows the balance.
+    const result = await api('/api/account', {signal: lifetime.signal});
+    if (epoch !== currentEpoch) return;
+    account = result;
+    renderAccount();
+  } catch (error) {
+    if (epoch !== currentEpoch) return;
+    if (error.status === 401) return flow.onSessionLost();
+    notice(`${error.message} Balance and ledger will retry shortly.`);
+  }
+});
 $('new-transfer-button').addEventListener('click', () => {
+  if (flow.run || transferBusy || !account) return;
   flow.dispose();
   notice();
   renderControls();
