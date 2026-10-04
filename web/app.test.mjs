@@ -9,12 +9,13 @@ import {CONTRACT_VERSION} from '../shared/protocol.mjs';
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function pairingPage(t) {
+async function pairingPage(t, scene = null) {
   const elements = new Map();
   const pageEvents = new Map();
   const timers = new Map();
   const sockets = [];
-  const state = {pending: true, phone: null, offline: false, requests: 0, failOpen: false, clock: Date.now()};
+  const state = {pending: true, authenticated: false, phone: null, offline: false, requests: 0,
+    accountRequests: 0, failOpen: false, clock: Date.now()};
   let nextTimer = 0;
   function element() {
     const listeners = new Map();
@@ -58,6 +59,7 @@ async function pairingPage(t) {
     history: {replaceState() {}}, performance, AbortController,
     Date: class extends Date { static now() { return state.clock; } }, console,
     WebSocket: TestSocket,
+    TestKeyToss: class { constructor() { return scene; } },
     setTimeout: (fn, delay) => { const id = ++nextTimer; timers.set(id, {fn, delay}); return id; },
     clearTimeout: id => timers.delete(id), setInterval: () => 1, clearInterval() {},
     PhoneBluetooth: class extends PhoneBluetooth {
@@ -68,7 +70,11 @@ async function pairingPage(t) {
     },
     api: async path => {
       if (state.offline) throw new Error('Server offline');
-      if (path === '/api/session') return {pending: state.pending, setup: {phone: state.phone}};
+      if (path === '/api/session') return {pending: state.pending, authenticated: state.authenticated, setup: {phone: state.phone}};
+      if (path === '/api/account') {
+        state.accountRequests++;
+        return {phone: state.phone, apps: []};
+      }
       if (path === '/api/pairing') {
         state.requests++;
         return {pairingId: `pair-${state.requests}`, pairingCode: `code-${state.requests}`, pageScoped: true};
@@ -76,7 +82,8 @@ async function pairingPage(t) {
       throw new Error(`Unexpected request: ${path}`);
     },
   });
-  const source = (await readFile(new URL('./app.mjs', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '');
+  let source = (await readFile(new URL('./app.mjs', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '');
+  if (scene) source = source.replace("import('./key-toss.mjs')", 'Promise.resolve({KeyToss: TestKeyToss})');
   vm.runInContext(source, context);
   t.after(() => pageEvents.get('pagehide')());
   await settle();
@@ -182,6 +189,61 @@ test('a lost sign-in session stops pairing recovery', async t => {
   assert.equal(page.elements.get('login-view').hidden, false);
 });
 
+test('verified pairing waits for the final animation even when authenticated status polls arrive', async t => {
+  let finish;
+  const completion = new Promise(resolve => { finish = resolve; });
+  const modes = [];
+  const page = await pairingPage(t, {sync(mode) { modes.push(mode); return mode === 'finish' ? completion : null; }});
+  page.state.authenticated = true;
+  const opening = vm.runInContext(`
+    flow.state = {phase: 'approved', challenge: {id: 'animation-login', expiresAt: Date.now() + 60000}};
+    renderChallenge(flow.state);
+    enterDashboard();
+  `, page.context);
+  await settle();
+  assert.equal(modes.at(-1), 'finish');
+  assert.equal(page.elements.get('auth-view').hidden, false);
+  assert.equal(page.elements.get('dashboard-view').hidden, true);
+  assert.equal(vm.runInContext('account', page.context), null);
+  await page.retry();
+  assert.equal(page.state.accountRequests, 1, 'status polling cannot bypass the animation or duplicate navigation');
+  assert.equal(page.elements.get('dashboard-view').hidden, true);
+  finish(true);
+  await opening;
+  assert.equal(page.elements.get('dashboard-view').hidden, false);
+});
+
+test('leaving pairing cancels the pending animation and suppresses late dashboard navigation', async t => {
+  let finish;
+  let finishing = false;
+  const completion = new Promise(resolve => { finish = resolve; });
+  const page = await pairingPage(t, {sync(mode) {
+    if (mode === 'finish') finishing = true;
+    if (mode === 'rest' && finishing) finish(false);
+    return mode === 'finish' ? completion : null;
+  }});
+  const opening = vm.runInContext(`
+    flow.state = {phase: 'approved', challenge: {id: 'animation-login', expiresAt: Date.now() + 60000}};
+    enterDashboard();
+  `, page.context);
+  await settle();
+  vm.runInContext('signOutLocally()', page.context);
+  await opening;
+  assert.equal(page.elements.get('login-view').hidden, false);
+  assert.equal(page.elements.get('dashboard-view').hidden, true);
+  assert.equal(vm.runInContext('account', page.context), null);
+});
+
+test('failed, interrupted, expired and cancelled pairing show the phone error scene', async t => {
+  const modes = [];
+  const page = await pairingPage(t, {sync(mode) { modes.push(mode); }});
+  for (const phase of ['reconnect', 'expired', 'cancelled', 'failed']) {
+    vm.runInContext(`flow.state = {phase: '${phase}', challenge: {id: 'failed-login', expiresAt: Date.now() + 60000}}; renderControls()`, page.context);
+    assert.equal(modes.at(-1), 'fail', phase);
+    assert.equal(page.elements.get('challenge-panel').hidden, false);
+  }
+});
+
 // Exercise the page's real chooser, polling and challenge lifecycle together.
 // Native selection is deferred to reproduce a status update while Chrome's
 // chooser is open; no physical Bluetooth or browser permissions are exercised.
@@ -259,4 +321,18 @@ test('phone coming online during selection waits for the chooser before starting
   assert.equal(vm.runInContext('flow.state.phase', context), 'waiting');
   await vm.runInContext('poll(epoch)', context);
   assert.equal(challenges, 1, 'later status polls do not duplicate verification');
+});
+
+test('reset button appears only while Command and Shift are held and hides on blur', async t => {
+  const page = await pairingPage(t);
+  const button = page.elements.get('reset-demo');
+  page.pageEvents.get('keydown')({metaKey: true, shiftKey: false});
+  assert.equal(button.hidden, true);
+  page.pageEvents.get('keydown')({metaKey: true, shiftKey: true});
+  assert.equal(button.hidden, false);
+  page.pageEvents.get('keyup')({metaKey: false, shiftKey: true});
+  assert.equal(button.hidden, true);
+  page.pageEvents.get('keydown')({metaKey: true, shiftKey: true});
+  page.pageEvents.get('blur')();
+  assert.equal(button.hidden, true);
 });

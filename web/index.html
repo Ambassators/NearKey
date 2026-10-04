@@ -20,13 +20,14 @@
       </defs>
     </svg>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true">n</span>nearkey</a>
+      <a class="brand" href="/" aria-label="Nearkey home"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7,5a7,7 0,1 0,6.3 10H17v3h3v-3h3v-6H13.3A7,7 0,0 0,7 5zM7,9a3,3 0,1 1,0 6a3,3 0,0 1,0 -6z"/></svg></span>nearkey</a>
       <div class="top-actions">
+        <button id="reset-demo" class="quiet" type="button" hidden>Reset demo</button>
         <button id="logout" class="quiet" hidden>Sign out <span aria-hidden="true">↗</span></button>
       </div>
     </header>
     <main>
-      <p id="notice" class="notice" role="status" hidden></p>
+      <p id="notice" class="notice" role="status" popover="manual" hidden></p>
       <section id="signin-stage" class="signin-page">
         <section class="login-card" aria-label="Nearkey sign-in">
           <div class="card-content">
@@ -35,7 +36,7 @@
             <h1 id="login-title" tabindex="-1">Sign in</h1>
             <form id="login-form">
               <label for="username">Username</label>
-              <input id="username" name="username" autocomplete="username" value="admin" required>
+              <input id="username" name="username" autocomplete="username" value="demo" required>
               <label for="password">Password</label>
               <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>
               <button id="login-button" class="primary" type="submit">Continue <svg><use href="#icon-arrow"/></svg></button>
@@ -74,7 +75,6 @@
                   </div>
                   <span id="setup-phone-dot" class="status-dot"></span>
                 </div>
-                <p id="bluetooth-problem" class="notice" hidden></p>
                 <div id="enrollment">
                   <div id="pairing-state" class="pairing-state" role="status" hidden>
                     <span id="pairing-state-spinner" class="auth-spinner" aria-hidden="true"></span>
@@ -114,14 +114,24 @@
                       <rect x="24" y="26" width="40" height="74" rx="8"/>
                       <rect class="kt-phone-screen" x="29" y="34" width="30" height="54" rx="3"/>
                       <path d="M39 30h10M39 95h10"/>
+                      <g class="kt-error">
+                        <circle cx="44" cy="60" r="12"/>
+                        <path d="m39 55 10 10m0-10-10 10"/>
+                      </g>
                     </g>
                     <g class="kt-laptop">
                       <rect x="240" y="26" width="80" height="56" rx="6"/>
                       <rect class="kt-screen" x="245" y="31" width="70" height="46" rx="3"/>
                       <rect class="kt-base" x="228" y="86" width="104" height="5" rx="2.5"/>
-                      <path class="kt-shackle" d="M274 54v-5a6 6 0 0 1 12 0v5"/>
-                      <rect class="kt-lock-body" x="270" y="54" width="20" height="15" rx="3"/>
-                      <path class="kt-keyhole" d="M280 59.5v4"/>
+                      <g class="kt-lock">
+                        <path class="kt-shackle" d="M274 54v-5a6 6 0 0 1 12 0v5"/>
+                        <rect class="kt-lock-body" x="270" y="54" width="20" height="15" rx="3"/>
+                        <path class="kt-keyhole" d="M280 59.5v4"/>
+                      </g>
+                      <g class="kt-success">
+                        <circle cx="280" cy="57" r="14"/>
+                        <path d="m273 57 5 5 9-10"/>
+                      </g>
                     </g>
                     <g class="kt-key">
                       <g class="kt-key-inner">
@@ -184,7 +194,6 @@
           </div>
         </div>
         <p id="replace-phone-description" class="muted">Verify your current phone, then scan a setup QR code with the phone you want to connect.</p>
-        <p id="replace-phone-error" class="notice" role="status" hidden></p>
         <div class="phone-dialog-actions">
           <button id="replace-phone-close" class="secondary" type="button">Cancel</button>
           <button id="replace-phone-confirm" class="primary" type="button">Continue <svg aria-hidden="true"><use href="#icon-arrow"/></svg></button>
@@ -226,7 +235,6 @@
           <input id="app-name" name="name" required maxlength="80" autocomplete="off" placeholder="e.g. My workspace">
           <label for="app-url">Website <span class="optional-label">Optional</span></label>
           <input id="app-url" name="url" type="url" maxlength="2048" autocomplete="url" placeholder="https://example.com">
-          <p id="app-form-error" class="notice" role="status" hidden></p>
           <button id="app-save" class="primary" type="submit">Save app <svg><use href="#icon-arrow"/></svg></button>
         </form>
       </dialog>

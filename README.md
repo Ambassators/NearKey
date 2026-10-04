@@ -10,12 +10,12 @@ The browser has three pages: `#/login` for the password, `#/loading` for phone e
 
 ## Demo scope
 
-- Mac Chromium browser; foreground native Android app; Bluetooth already enabled.
+- Mac Chromium browser; native Android app with background Bluetooth verification; Bluetooth already enabled.
 - One account and one enrolled phone, with one-time enrollment and browser permission.
 - Server-initiated, single-use login challenges lasting at most 60 seconds and bound to the original pending session.
 - Automatic phone signatures over immutable account, service, phone and session context; browser relays the proof.
 
-This is an in-memory authentication demo. Restarting clears the enrolled phone, sessions, saved apps and verification history. Automatic signatures prove key possession, not user consent; BLE does not prevent relays or prove distance. Phone keys are non-exportable in AndroidKeyStore; hardware backing is not guaranteed.
+Phone pairing survives server restarts. The server saves the enrolled phone's identity, public key and connection credential in `.data/phone.json`; the Android private key remains in AndroidKeyStore. Restarting clears sign-in sessions, saved apps and verification history, so a fresh sign-in still requires both factors. Automatic signatures prove key possession, not user consent; BLE does not prevent relays or prove distance. Phone keys are non-exportable in AndroidKeyStore; hardware backing is not guaranteed.
 
 ## Run the server and browser
 
@@ -26,7 +26,9 @@ npm ci
 npm start
 ```
 
-Local browser: <http://localhost:5173>. Demo credentials: `admin` / `password`. The server listens on `127.0.0.1:5173` by default. `HOST`, `PORT`, `PUBLIC_ORIGIN`, `PHONE_ORIGIN`, `DEMO_USERNAME` and `DEMO_PASSWORD` are environment variables; `.env` files are not automatically loaded.
+Local browser: <http://localhost:5173>. Demo credentials: `admin` / `mint-river-otter-47`. The server listens on `127.0.0.1:5173` by default. `HOST`, `PORT`, `PUBLIC_ORIGIN`, `PHONE_ORIGIN`, `DEMO_USERNAME`, `DEMO_PASSWORD` and `PAIRING_FILE` are environment variables; `.env` files are not automatically loaded.
+
+The default pairing file is relative to the repository, independent of the working directory. `PAIRING_FILE` can select another location. Keep this file private and backed up: it contains the phone connection credential and is excluded from Git. Only run one server against a given pairing file. A corrupt file or a changed account/browser origin stops startup rather than silently forgetting the phone. Pairings created by an older server that only stored them in memory need one final enrollment after upgrading; subsequent restarts preserve them.
 
 For Wi-Fi pairing with the Android **debug** app, run `npm run start:wifi` and keep both devices on the same network. This listens on all interfaces and puts the Mac's private IPv4 address into the setup QR. Keep the Mac browser at `http://localhost:5173` so Bluetooth remains available. Set `PHONE_ORIGIN` to an exact reachable origin if automatic address selection needs an override. Release Android builds require HTTPS.
 
@@ -51,7 +53,7 @@ Install `android/app/build/outputs/apk/debug/app-debug.apk` on a physical Androi
 ## Demo walkthrough
 
 1. Open NearKey in Mac Chromium and enter the demo credentials. The login awaits Bluetooth verification.
-2. On the first login, the page creates a setup QR automatically. Tap **Scan setup QR code** in the Android app and scan the browser's QR. Review the server address, tap **Enroll phone**, and keep the app visible and online. **Enter details manually** opens the optional manual fallback. The code stays valid while the setup page is connected; closing, reloading or leaving the page ends that code.
+2. On the first login, the page creates a setup QR automatically. Tap **Scan setup QR code** in the Android app and scan the browser's QR. Review the server address, tap **Enroll phone**, and keep the phone online; verification continues in the background after Bluetooth setup. **Enter details manually** opens the optional manual fallback. The code stays valid while the setup page is connected; closing, reloading or leaving the page ends that code.
 3. Grant Nearby devices permission on the phone when prompted and select it in the browser's first-time Bluetooth chooser. If the browser asks you to advertise setup before a login challenge starts, tap **Advertise setup for 60 seconds** on the phone. Setup advertising cannot sign login requests.
 4. Continue Bluetooth verification. The server sends a login challenge to the phone, which advertises and acknowledges readiness. The browser connects, reads the signed login proof and submits it.
 5. After verification, the dashboard opens with your app list. Use **Add app** at the top or the **+** button below the list to save an app name and optional HTTP/HTTPS URL. Log out and sign in again to verify that the Bluetooth factor runs at login.

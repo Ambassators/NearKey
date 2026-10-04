@@ -13,8 +13,8 @@ android {
         applicationId = "dev.nearkey.passive"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "2.5"
+        versionCode = 8
+        versionName = "2.6"
     }
     buildFeatures { buildConfig = true }
     testOptions.unitTests.all {

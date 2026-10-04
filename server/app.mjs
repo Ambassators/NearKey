@@ -7,6 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { approvalText, enrollmentText, CONTRACT_VERSION, CHALLENGE_TTL_MS } from '../shared/protocol.mjs';
 import { randomToken, parsePublicKey, verifyProof, passwordRecord, passwordMatches } from './crypto.mjs';
 import { validatePhoneOrigin } from './network.mjs';
+import { phoneStore } from './phone-store.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const SESSION_TTL_MS = 8 * 60 * 60_000;
@@ -168,7 +169,7 @@ async function staticFiles(root) {
 }
 
 export async function createApp({publicOrigin = 'http://localhost:5173', phoneOrigin = publicOrigin, username = 'admin',
-  password = 'password', now = Date.now, root = ROOT} = {}) {
+  password = 'mint-river-otter-47', now = Date.now, root = ROOT, pairingFile = null} = {}) {
   validateOrigin(publicOrigin);
   validatePhoneOrigin(phoneOrigin);
   if (typeof username !== 'string' || !username.trim() || username.length > 80 || /[\r\n]/.test(username)) {
@@ -180,7 +181,8 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
   const challenges = new Map();
   const rates = new Map();
   let pairing = null;
-  let phone = null;
+  const savedPhone = phoneStore(pairingFile, {username, publicOrigin});
+  let phone = savedPhone.load();
   let activeId = null;
   const activity = [];
   // These are saved account app entries, not credentials or live integrations.
@@ -327,6 +329,28 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
           fail(403, 'origin_rejected', 'Phone API is native-app only');
         }
       } else sameOrigin(req, req.method !== 'GET');
+      if (req.method === 'POST' && route === '/api/demo/reset') {
+        // Offline demo recovery is restricted to the local browser, including in Wi-Fi mode.
+        const localAddresses = ['127.0.0.1', '::1', '::ffff:127.0.0.1'];
+        if (!localAddresses.includes(req.socket.remoteAddress)
+            || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(publicOrigin).hostname)) {
+          fail(403, 'local_only', 'Reset the demo from the local browser');
+        }
+        exactFields(await readJson(req), []);
+        savedPhone.clear();
+        for (const record of challenges.values()) endChallenge(record, 'cancelled');
+        clearPairing();
+        const oldSocket = phone?.socket;
+        phone = null;
+        oldSocket?.terminate();
+        sessions.clear();
+        challenges.clear();
+        activeId = null;
+        apps.length = 0;
+        activity.length = 0;
+        json(res, 200, {ok: true}, {'Set-Cookie': cookie()});
+        return;
+      }
       if (req.method === 'POST' && ['/api/login', '/api/phones/enroll'].includes(route)) {
         rateLimit(req, 'credentials', 10);
       }
@@ -386,6 +410,10 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
               || sessions.get(enrollment.session)?.verifiedAt == null))) {
           fail(401, 'invalid_pairing', 'Pairing code expired or invalid');
         }
+        const nextPhone = {id: randomUUID(), label: body.label.trim(), key, deviceToken: randomToken(), socket: null};
+        // Persist before acknowledging or revoking the previous phone. Synchronous
+        // commit keeps concurrent enrollment requests from consuming the same code.
+        savedPhone.save(nextPhone);
         if (enrollment.replacementPhoneId) {
           // Commit replacement only after the new phone proves possession of its key.
           // The initiating session must prove the new phone before regaining account access.
@@ -399,7 +427,7 @@ export async function createApp({publicOrigin = 'http://localhost:5173', phoneOr
           previousPhone.socket = null;
           if (oldSocket) oldSocket.terminate();
         }
-        phone = {id: randomUUID(), label: body.label.trim(), key, deviceToken: randomToken(), socket: null};
+        phone = nextPhone;
         clearPairing();
         json(res, 200, {phoneId: phone.id, deviceToken: phone.deviceToken});
         return;

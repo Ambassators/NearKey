@@ -3,13 +3,16 @@ package dev.nearkey.passive
 import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
-import android.view.WindowManager
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,7 +30,16 @@ class MainActivity : ComponentActivity() {
     private val draft by lazy { ViewModelProvider(this)[EnrollmentDraft::class.java] }
     private lateinit var ui: NearKeyUi
     private var websites = emptyList<ConnectedWebsite>()
-    private val connections = linkedMapOf<String, WebsiteConnection>()
+    private val runtime by lazy { (application as NearKeyApplication).authenticator }
+    private val connections get() = runtime.connections
+    private val runtimeChanged: () -> Unit = {
+        if (foreground) {
+            ui.updateConnections(connectionStates())
+            ui.updateLogin(loginDescription())
+            if (runtime.status.isNotBlank()) setStatus(runtime.status)
+            completeSetupIfReady()
+        }
+    }
     private var storageError = false
     private var foreground = false
     private var generation = 0
@@ -37,19 +49,26 @@ class MainActivity : ComponentActivity() {
     private var setupLoaded = false
     private var manualOrigin = ""
     private var manualCode = ""
-    private var setupOrigin: String? = null
-    private var bluetoothReadyOrigin: String? = null
+    private var setupOrigin: String?
+        get() = runtime.setupOrigin
+        set(value) { runtime.setupOrigin = value }
+    private val bluetoothReadyOrigin get() = runtime.bluetoothReadyOrigin
     private var status = ""
-    private var bluetoothStatus = "Bluetooth is ready when a login needs it."
-    private var ble: BlePeripheral? = null
     private var permissionAction: (() -> Unit)? = null
     private var permissionRequested = false
-    private var readyInFlight: PendingLogin? = null
-    private val waiting = linkedMapOf<String, PendingLogin>()
-    private var activeLogin: PendingLogin? = null
-
-    private data class PendingLogin(val owner: WebsiteConnection, val challenge: Challenge, val end: Long) {
-        fun remaining() = minOf(challenge.expiresAt - System.currentTimeMillis(), end - SystemClock.elapsedRealtime())
+    private var demoResetVisible = false
+    private val shakeDetector = ShakeDetector()
+    private val sensors by lazy { getSystemService(SENSOR_SERVICE) as SensorManager }
+    private val shakeListener = object : SensorEventListener {
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+        override fun onSensorChanged(event: SensorEvent) {
+            if (!foreground || demoResetVisible) return
+            if (shakeDetector.sample(event.values[0], event.values[1], event.values[2], event.timestamp / 1_000_000)) {
+                demoResetVisible = true
+                ui.showDemoReset(true, !enrolling, ::confirmDemoReset)
+                ui.root.announceForAccessibility("reset demo button available")
+            }
+        }
     }
 
     private val scanner = registerForActivityResult(ScanContract()) { result ->
@@ -64,12 +83,47 @@ class MainActivity : ComponentActivity() {
             else setStatus("Bluetooth access denied. Allow Nearby devices in app settings, then retry.")
         }
     }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private fun ensureBackgroundService() {
+        if (!foreground || storageError || websites.isEmpty() || !hasPermissions()) return
+        try {
+            prefs.edit().putBoolean("backgroundEnabled", true).apply()
+            AuthenticatorService.start(this)
+            if (Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("notificationAsked", false)) {
+                prefs.edit().putBoolean("notificationAsked", true).apply()
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } catch (_: Exception) {
+            setStatus("Background verification could not start. Check Bluetooth access and reopen NearKey.")
+        }
+    }
+
+    private fun offerBackgroundSettings(always: Boolean = false) {
+        if (!foreground) return
+        val power = getSystemService(PowerManager::class.java)
+        val allowed = power.isIgnoringBatteryOptimizations(packageName)
+        if (!always && (allowed || prefs.getBoolean("batterySettingsOffered", false))) return
+        prefs.edit().putBoolean("batterySettingsOffered", true).apply()
+        AlertDialog.Builder(this).setTitle("Verify with the screen off")
+            .setMessage(if (allowed)
+                "Background verification is enabled. Keep Bluetooth and your network connected. The running notification lets you pause verification; reopen NearKey to resume. A powered-off phone or a force-stopped app cannot verify logins."
+            else "Allow NearKey to run without battery optimization so website connections can receive login requests while the phone is idle. In battery settings, find NearKey and choose Don’t optimize or Unrestricted. Background Bluetooth verification uses extra battery. Keep Bluetooth and your network connected.")
+            .setNegativeButton(if (allowed) "Done" else "Later", null)
+            .apply {
+                if (!allowed) setPositiveButton("Open battery settings") { _, _ ->
+                    try {
+                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    } catch (_: Exception) {
+                        setStatus("Open phone settings → Apps → NearKey → Battery and allow unrestricted background use.")
+                    }
+                }
+            }.show()
+    }
+
     private val ticker = object : Runnable {
         override fun run() {
             if (!foreground) return
-            waiting.values.toList().filter { it.remaining() <= 0 }.forEach {
-                clearLogin(it.owner, "Login request expired. Try again in your browser.")
-            }
             ui.updateLogin(loginDescription())
             handler.postDelayed(this, 250)
         }
@@ -77,7 +131,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        demoResetVisible = savedInstanceState?.getBoolean("demoResetVisible") ?: false
         ui = NearKeyUi(this)
         setContentView(ui.root)
         try { websites = store.load() } catch (_: Exception) {
@@ -91,7 +145,7 @@ class MainActivity : ComponentActivity() {
             if (restored in 0..2 && (restored != 0 || websites.isNotEmpty())) wizardStep = restored
         }
         draft.setup?.let { if (wizardStep != 3) applyEnrollment(it) }
-        websites.forEach(::addConnection)
+        runtime.updateWebsites(websites)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (enrolling) return
@@ -108,6 +162,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putInt("wizardStep", wizardStep)
+        outState.putBoolean("demoResetVisible", demoResetVisible)
         super.onSaveInstanceState(outState)
     }
 
@@ -127,6 +182,33 @@ class MainActivity : ComponentActivity() {
                     if (setupLoaded) { setupLoaded = false; draft.clear() }
                 })
         }
+        ui.showDemoReset(demoResetVisible, foreground && !enrolling, ::confirmDemoReset)
+    }
+
+    private fun confirmDemoReset() {
+        if (!foreground || enrolling) return
+        AlertDialog.Builder(this).setTitle("Reset demo?")
+            .setMessage("Clear all website registrations and the key saved on this phone, then return to the first setup screen. Server pairing stays in place and requires an offline reset before pairing again.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Reset demo") { _, _ -> resetDemo() }.show()
+    }
+
+    private fun resetDemo() {
+        if (!foreground || enrolling) return
+        try {
+            store.save(emptyList())
+            generation++
+            enrollmentApi.cancelRequests()
+            setupOrigin = null; websites = emptyList()
+            runtime.updateWebsites(emptyList())
+            stopService(Intent(this, AuthenticatorService::class.java))
+            draft.clear(); manualOrigin = ""; manualCode = ""
+            setupLoaded = false; manualExpanded = false; storageError = false
+            wizardStep = 1; demoResetVisible = false
+            status = "Phone demo reset. Reset server pairing offline before pairing again."
+            try { key.delete() } catch (_: Exception) { status += " The phone key could not be erased." }
+            render()
+        } catch (e: Exception) { setStatus(e.message ?: "Could not reset the demo") }
     }
 
     private fun showKeyImport() {
@@ -138,17 +220,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setStatus(message: String) { status = message; ui.updateStatus(message) }
-    private fun connectionStates() = connections.mapValues { (_, connection) -> connection.online to connection.status }
-    private fun loginDescription(): String {
-        val login = activeLogin ?: return if (connections.values.any { it.online })
-            "✓  Ready when you sign in" else "Waiting for website connection"
-        return "Verifying ${login.owner.website.address}\n${login.challenge.username} · ${(login.remaining().coerceAtLeast(0) + 999) / 1000}s remaining"
-    }
+    private fun connectionStates() = runtime.connectionStates()
+    private fun loginDescription() = runtime.loginDescription()
 
     private fun beginSetup() {
         if (websites.size >= 30) { setStatus("You can connect up to 30 websites."); return }
         if (enrolling || storageError) return
-        setupOrigin = null; bluetoothReadyOrigin = null
+        setupOrigin = null
         manualOrigin = ""; manualCode = ""; setupLoaded = false; manualExpanded = false; draft.clear()
         status = ""; wizardStep = 2; render()
     }
@@ -217,15 +295,34 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart(); foreground = true; generation++
         handler.removeCallbacks(ticker); handler.post(ticker)
-        render(); connections.values.forEach { it.start() }
+        runtime.observe(runtimeChanged)
+        runtime.lifetime.attachUi()
+        ensureBackgroundService()
+        render()
+        completeSetupIfReady()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (runtime.lifetime.serviceRunning) runtime.setupBluetooth()
+        shakeDetector.reset()
+        sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
+            sensors.registerListener(shakeListener, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
+
+    override fun onPause() {
+        sensors.unregisterListener(shakeListener)
+        shakeDetector.reset()
+        super.onPause()
     }
 
     override fun onStop() {
         foreground = false; generation++; permissionAction = null
         handler.removeCallbacks(ticker)
-        stopBluetooth("App paused. Keep NearKey open to verify logins.")
-        waiting.clear(); activeLogin = null
-        connections.values.forEach { it.stop() }; enrollmentApi.cancelRequests()
+        runtime.removeObserver(runtimeChanged)
+        runtime.lifetime.detachUi()
+        enrollmentApi.cancelRequests()
         if (enrolling) status = "Setup interrupted. If the browser shows enrollment, perform an offline server reset before retrying."
         enrolling = false; render()
         super.onStop()
@@ -233,7 +330,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         foreground = false; generation++; handler.removeCallbacks(ticker)
-        stopBluetooth("App closed"); connections.values.forEach { it.close() }; enrollmentApi.close()
+        enrollmentApi.close()
         super.onDestroy()
     }
 
@@ -271,7 +368,8 @@ class MainActivity : ComponentActivity() {
                     manualCode = ""; draft.clear(); setupLoaded = false
                     setupOrigin = site.origin; wizardStep = 3
                     status = "Website paired. Tap below to connect Bluetooth."
-                    addConnection(site).start()
+                    runtime.updateWebsites(websites)
+                    ensureBackgroundService()
                 } catch (e: Exception) {
                     status = "${e.message ?: "Enrollment failed"}. If your browser already shows enrollment, perform an offline server reset before retrying."
                 }
@@ -284,118 +382,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun addConnection(site: ConnectedWebsite): WebsiteConnection {
-        val connection = WebsiteConnection(this, site, handler, key,
-            changed = {
-                ui.updateConnections(connectionStates())
-                ui.updateLogin(loginDescription())
-                completeSetupIfReady()
-                if (foreground && ble == null && hasPermissions() &&
-                    websites.any { it.setupComplete && connections[it.origin]?.online == true }) {
-                    startBluetooth(activeLogin)
-                }
-            }, challengeReceived = ::receiveChallenge,
-            challengeCancelled = { owner, id ->
-                if (waiting[owner.website.origin]?.challenge?.id == id) {
-                    clearLogin(owner, "Login request finished. Ready for the next sign-in.")
-                }
-            }, lost = { owner ->
-                if (setupOrigin == owner.website.origin) {
-                    bluetoothReadyOrigin = null
-                    if (wizardStep == 3) setStatus(owner.status)
-                }
-                clearLogin(owner, "Website connection closed. Reconnect to verify logins.")
-                if (connections.values.none { it.online }) stopBluetooth("Waiting for website connection")
-            })
-        connections[site.origin] = connection
-        return connection
-    }
-
-    private fun receiveChallenge(owner: WebsiteConnection, challenge: Challenge) {
-        val previous = waiting[owner.website.origin]
-        if (previous?.challenge?.id == challenge.id) {
-            require(previous.challenge == challenge) { "Server changed an immutable challenge" }
-            return
-        }
-        if (previous != null) clearLogin(owner, "Previous login request closed")
-        waiting[owner.website.origin] = PendingLogin(owner, challenge,
-            SystemClock.elapsedRealtime() + challenge.expiresAt - System.currentTimeMillis())
-        activateNextLogin()
-    }
-
-    private fun activateNextLogin() {
-        if (!foreground || activeLogin != null) return
-        val next = waiting.values.firstOrNull { it.owner.online && it.remaining() > 0 } ?: return
-        activeLogin = next
-        ui.updateLogin(loginDescription())
-        withPermissions { startBluetooth(next) }
-    }
-
-    private fun clearLogin(owner: WebsiteConnection, message: String) {
-        val removed = waiting.remove(owner.website.origin)
-        if (removed != null && activeLogin === removed) {
-            activeLogin = null; readyInFlight = null
-            ble?.setChallenge(null)
-            bluetoothStatus = message
-            ui.updateLogin(loginDescription()); activateNextLogin()
-        }
-    }
-
-    private fun stopBluetooth(message: String) {
-        val peripheral = ble; ble = null; peripheral?.close()
-        readyInFlight = null; permissionAction = null; bluetoothReadyOrigin = null
-        bluetoothStatus = message
-    }
-
     private fun setupBluetooth() {
         if (!foreground || setupOrigin == null) return
         val site = connections[setupOrigin] ?: return
-        if (activeLogin != null && activeLogin?.owner !== site) {
-            setStatus("Another website is verifying a login. Finish that sign-in, then retry Bluetooth setup.")
-            return
-        }
         if (!site.online) {
             setStatus("Connecting to your website. Bluetooth setup will wait for the authenticated connection.")
             site.retry()
         }
-        withPermissions { startBluetooth(activeLogin) }
-    }
-
-    private fun startBluetooth(login: PendingLogin?) {
-        if (!foreground || activeLogin !== login || (login == null && setupOrigin == null &&
-            websites.none { it.setupComplete && connections[it.origin]?.online == true })) return
-        if (login != null && (!login.owner.online || login.remaining() <= 0)) {
-            clearLogin(login.owner, "Login request expired"); return
+        withPermissions {
+            ensureBackgroundService()
+            runtime.setupBluetooth()
         }
-        if (!hasPermissions()) { withPermissions { startBluetooth(login) }; return }
-        ble?.let { it.setChallenge(login?.challenge); return }
-        bluetoothStatus = "Starting Bluetooth…"
-        lateinit var peripheral: BlePeripheral
-        peripheral = BlePeripheral(this, handler, login?.challenge, key::sign,
-            onReady = {
-                if (foreground && ble === peripheral) {
-                    val current = activeLogin
-                    val setup = setupOrigin
-                    if (current != null) acknowledgeReady(current)
-                    if (setup != null && (current == null || current.owner.website.origin == setup)) {
-                        bluetoothReadyOrigin = setup
-                        completeSetupIfReady()
-                    }
-                }
-            },
-            onStatus = {
-                if (foreground && ble === peripheral) {
-                    bluetoothStatus = it
-                    if (wizardStep == 3) setStatus(it)
-                }
-            },
-            onError = {
-                if (foreground && ble === peripheral) {
-                    ble = null; readyInFlight = null; bluetoothReadyOrigin = null
-                    bluetoothStatus = it; setStatus(it)
-                }
-            })
-        ble = peripheral; peripheral.start()
     }
 
     private fun completeSetupIfReady() {
@@ -405,42 +402,21 @@ class MainActivity : ComponentActivity() {
             val next = websites.map { if (it.origin == origin) it.copy(setupComplete = true) else it }
             store.save(next); websites = next
             setupOrigin = null; wizardStep = 0
+            runtime.updateWebsites(websites)
             status = "Website connected. Continue in your browser to finish signing in."
             render()
+            offerBackgroundSettings()
         } catch (e: Exception) { setStatus(e.message ?: "Cannot save setup completion. Retry Bluetooth setup.") }
     }
 
-    private fun acknowledgeReady(login: PendingLogin) {
-        val owner = login.owner
-        if (!foreground || !owner.online || activeLogin !== login || readyInFlight === login) return
-        if (login.remaining() <= 0) { clearLogin(owner, "Login request expired"); return }
-        val peripheral = ble ?: return
-        val epoch = generation; val channel = owner.socket ?: return
-        readyInFlight = login
-        try {
-            owner.api.post(owner.api.origin(owner.website.origin), "/api/phone/challenges/${login.challenge.id}/ready",
-                JSONObject(), owner.website.token) { result, error -> handler.post {
-                if (!foreground || generation != epoch || owner.socket !== channel || activeLogin !== login || ble !== peripheral) return@post
-                readyInFlight = null
-                if (login.remaining() <= 0) { clearLogin(owner, "Login request expired"); return@post }
-                if (result?.optBoolean("ok") != true) {
-                    clearLogin(owner, error ?: "Readiness failed")
-                    setStatus("Bluetooth could not be confirmed. Cancel and retry in your browser.")
-                } else setStatus("Bluetooth is ready. Waiting for your browser to verify the login.")
-            } }
-        } catch (e: Exception) { clearLogin(owner, e.message ?: "Readiness failed") }
-    }
-
-    private fun hasPermissions(): Boolean = Build.VERSION.SDK_INT < 31 ||
-        listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
-            .all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+    private fun hasPermissions() = runtime.hasPermissions()
 
     private fun withPermissions(action: () -> Unit) {
         if (!foreground) return
         if (hasPermissions()) action()
         else {
-            val epoch = generation; val login = activeLogin; val setup = setupOrigin
-            permissionAction = { if (foreground && generation == epoch && activeLogin === login && setupOrigin == setup) action() }
+            val epoch = generation; val setup = setupOrigin
+            permissionAction = { if (foreground && generation == epoch && setupOrigin == setup) action() }
             setStatus("Allow Nearby devices so NearKey can use Bluetooth.")
             if (!permissionRequested) {
                 permissionRequested = true
@@ -452,14 +428,15 @@ class MainActivity : ComponentActivity() {
     private fun websiteDetails(site: ConnectedWebsite) {
         val connection = connections[site.origin]
         AlertDialog.Builder(this).setTitle(site.address)
-            .setItems(arrayOf("Retry website connection", "Bluetooth setup", "Connection details", "Forget website")) { _, which ->
+            .setItems(arrayOf("Retry website connection", "Bluetooth setup", "Connection details", "Background settings", "Forget website")) { _, which ->
                 when (which) {
                     0 -> connection?.retry()
                     1 -> { setupOrigin = site.origin; wizardStep = 3; status = ""; render() }
                     2 -> AlertDialog.Builder(this).setTitle("Connection details")
-                        .setMessage("${site.origin}\n\n${connection?.status ?: "Offline"}\nBluetooth: $bluetoothStatus\n\n${key.backing()}\n\nKeep this app open for automatic verification.")
+                        .setMessage("${site.origin}\n\n${connection?.status ?: "Offline"}\nBluetooth: ${runtime.bluetoothStatus}\n\n${key.backing()}\n\nVerification continues in the background and with the screen off.")
                         .setPositiveButton("Done", null).show()
-                    3 -> AlertDialog.Builder(this).setTitle("Forget ${site.address}?")
+                    3 -> offerBackgroundSettings(always = true)
+                    4 -> AlertDialog.Builder(this).setTitle("Forget ${site.address}?")
                         .setMessage("Removes this website’s local phone credential. Its server enrollment stays in place and needs an offline server reset before you can pair again.")
                         .setNegativeButton("Keep website", null)
                         .setPositiveButton("Forget locally") { _, _ -> forget(site) }.show()
@@ -471,10 +448,10 @@ class MainActivity : ComponentActivity() {
         try {
             val next = websites.filter { it.origin != site.origin }
             store.save(next); websites = next
-            connections.remove(site.origin)?.close()
+            runtime.updateWebsites(websites)
             if (setupOrigin == site.origin) setupOrigin = null
             if (next.isEmpty()) {
-                stopBluetooth("Website forgotten")
+                stopService(Intent(this, AuthenticatorService::class.java))
                 wizardStep = 1; draft.clear(); manualOrigin = ""; manualCode = ""
                 setupLoaded = false; manualExpanded = false
             }

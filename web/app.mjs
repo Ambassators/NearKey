@@ -7,14 +7,16 @@ const $ = id => document.getElementById(id);
 const diagnostics = {transport: 'Idle', observed: new Map(), challenge: null, startedAt: null, endedAt: null};
 const bluetooth = new PhoneBluetooth({onProgress: stage => {
   diagnostics.transport = stage;
+  console.debug('[NearKey Bluetooth]', stage);
   renderDebug();
 }});
 let keyToss = null;
 // An optional animation must not prevent sign-in when its assets are unavailable.
-void import('./key-toss.mjs').then(({KeyToss}) => {
+const keyTossReady = import('./key-toss.mjs').then(({KeyToss}) => {
   keyToss = new KeyToss($('key-toss'));
   renderControls();
-}).catch(() => {});
+  return keyToss;
+}).catch(() => null);
 const enrollmentQr = new EnrollmentQr({container: $('pair-qr'), message: $('pair-instruction'),
   codeInput: $('pair-code'), originInput: $('base-url'), manual: $('pair-manual')});
 const replacementQr = new EnrollmentQr({container: $('replacement-qr'), message: $('replacement-instruction'),
@@ -44,9 +46,12 @@ let replacementPairing = null;
 let replacementBusy = false;
 let replacementRequested = false;
 let openingDashboard = false;
+let finishingVerification = false;
 let restoringSession = true;
 let visiblePage = null;
 let noticeTimer = null;
+let noticeFrame = null;
+let shownBluetoothProblem = null;
 const pendingStatuses = new Set(['waiting_phone', 'waiting_bluetooth']);
 const challengeTitles = {
   waiting: 'Verifying phone',
@@ -73,16 +78,33 @@ const flow = new ChallengeFlow({api, bluetooth, onChange: state => {
 }});
 
 // Session lifecycle and feedback.
-function notice(message = '', {toast = false} = {}) {
+function notice(message = '', {error = false} = {}) {
   clearTimeout(noticeTimer);
   noticeTimer = null;
-  $('notice').textContent = message;
-  $('notice').hidden = !message;
-  $('notice').dataset.presentation = toast ? 'toast' : 'inline';
-  if (message && toast) {
+  if (noticeFrame !== null) cancelAnimationFrame(noticeFrame);
+  noticeFrame = null;
+  const toast = $('notice');
+  toast.hidePopover?.();
+  toast.textContent = message;
+  toast.hidden = !message;
+  toast.dataset.tone = error ? 'error' : 'status';
+  if (message) {
+    toast.showPopover?.();
+    // Follow the card while it resizes, without changing the page layout.
+    if (typeof requestAnimationFrame === 'function') {
+      const position = () => {
+        if (toast.hidden) return;
+        const card = document.querySelector('dialog[open]') || document.querySelector('.login-card');
+        const bounds = card?.getClientRects().length ? card.getBoundingClientRect() : null;
+        const height = toast.getBoundingClientRect().height;
+        toast.style.top = `${Math.max(16, Math.min(bounds ? bounds.bottom + 16 : window.innerHeight - height - 24,
+          window.innerHeight - height - 16))}px`;
+        noticeFrame = requestAnimationFrame(position);
+      };
+      position();
+    }
     noticeTimer = setTimeout(() => {
-      $('notice').hidden = true;
-      noticeTimer = null;
+      notice();
     }, 4000);
   }
   if (message) observeDebug('notice', message);
@@ -173,11 +195,12 @@ function resetLifetime() {
   pairingRetryAt = pairingFailures = pairingConnectedAt = 0;
   pairingElsewhere = false;
   autoAttempted = openingDashboard = false;
+  finishingVerification = false;
+  keyToss?.sync('rest');
   appsKey = '';
   accountRevision++;
   $('app-dialog').close();
   $('app-form').reset();
-  $('app-form-error').hidden = true;
   appOpener = null;
   diagnostics.challenge = diagnostics.startedAt = diagnostics.endedAt = null;
   diagnostics.transport = 'Idle';
@@ -196,7 +219,7 @@ function signOutLocally() {
 function handleError(error) {
   if (error.status === 401) return flow.onSessionLost();
   if (error.code === 'verification_required') return void resumeSetup();
-  notice(error.message);
+  notice(error.message, {error: true});
 }
 
 async function resumeSetup() {
@@ -260,8 +283,9 @@ function renderControls() {
   $('password').disabled = loginBusy;
   $('setup-panel').hidden = !!state;
   $('challenge-panel').hidden = !state;
-  // The key-toss scene loops while the phone is signing, settles unlocked on approval, and rests otherwise.
-  keyToss?.sync(!state ? 'rest' : state.phase === 'approved' ? 'finish' : running && state.phase !== 'reconnect' ? 'loop' : 'rest');
+  // Keep the result scene visible until its final checkmark has finished.
+  keyToss?.sync(!state ? 'rest' : finishingVerification || state.phase === 'approved' ? 'finish'
+    : ['reconnect', 'expired', 'cancelled', 'failed'].includes(state.phase) ? 'fail' : running ? 'loop' : 'rest');
   $('enrollment').hidden = !!phone;
   $('bluetooth-setup').hidden = !phone;
   $('factor-status').hidden = !phone;
@@ -279,13 +303,14 @@ function renderControls() {
   $('choose-button').firstChild.textContent = chooserBusy ? 'Connecting… ' : bluetooth.deviceId ? 'Reconnect phone ' : 'Connect phone ';
   $('verify-button').disabled = challengeBusy || chooserBusy || bluetooth.busy || !phone?.online || !!problem;
   $('verify-button').firstChild.textContent = challengeBusy ? 'Verifying… ' : 'Verify phone ';
-  $('reconnect-button').hidden = !running || state?.phase !== 'reconnect';
+  $('reconnect-button').hidden = finishingVerification || !running || state?.phase !== 'reconnect';
   $('reconnect-button').disabled = chooserBusy || !state?.phoneReady || bluetooth.busy;
-  $('cancel-button').hidden = !running;
-  $('retry-button').hidden = !state || running || state.phase === 'approved';
+  $('cancel-button').hidden = finishingVerification || !running;
+  $('retry-button').hidden = !state || running || finishingVerification || state.phase === 'approved';
   $('retry-button').disabled = challengeBusy || chooserBusy || bluetooth.busy || !phone?.online || !!problem;
-  $('bluetooth-problem').hidden = !problem;
-  $('bluetooth-problem').textContent = problem || '';
+  const activeProblem = pending && phone ? problem : null;
+  if (activeProblem && activeProblem !== shownBluetoothProblem) notice(activeProblem, {error: true});
+  shownBluetoothProblem = activeProblem;
   $('add-app-button').disabled = !account || appBusy;
   $('app-save').disabled = $('app-name').disabled = $('app-url').disabled = appBusy;
   $('app-dialog-close').disabled = appBusy;
@@ -366,9 +391,18 @@ async function enterDashboard() {
     // The server, not a successful password or browser permission, opens the workspace.
     const result = await api('/api/account', {signal: lifetime.signal});
     if (epoch !== currentEpoch) return;
+    if (flow.state) {
+      finishingVerification = true;
+      renderControls();
+      const scene = keyToss || await keyTossReady;
+      if (epoch !== currentEpoch) return;
+      const completed = await scene?.sync('finish');
+      if (epoch !== currentEpoch || completed === false) return;
+    }
     account = result;
     session = {...session, authenticated: true, pending: false};
     flow.dispose();
+    finishingVerification = false;
     $('password').value = '';
     notice();
     renderAccount();
@@ -379,7 +413,10 @@ async function enterDashboard() {
       void startReplacement();
     }
   } finally {
-    if (epoch === currentEpoch) openingDashboard = false;
+    if (epoch === currentEpoch) {
+      openingDashboard = false;
+      finishingVerification = false;
+    }
   }
 }
 
@@ -427,7 +464,7 @@ async function poll(currentEpoch) {
 function renderChallenge(state) {
   if (!state) return renderControls();
   $('challenge-title').textContent = challengeTitles[state.phase] || challengeTitles.waiting;
-  $('challenge-message').textContent = state.message;
+  $('challenge-message').textContent = state.phase === 'approved' ? 'Finishing phone verification…' : state.message;
   tick();
 }
 
@@ -496,7 +533,7 @@ async function startChallenge() {
 // User actions: Bluetooth selection stays inside a fresh click activation.
 for (const [id, provider] of [['google-signin', 'Google'], ['apple-signin', 'Apple']]) {
   $(id).addEventListener('click', () => {
-    if (!loginBusy) notice(`${provider} sign-in isn’t available in this demo.`, {toast: true});
+    if (!loginBusy) notice(`${provider} sign-in isn’t available in this demo.`);
   });
 }
 $('login-form').addEventListener('submit', async event => {
@@ -518,7 +555,7 @@ $('login-form').addEventListener('submit', async event => {
       $(flow.state ? 'challenge-title' : 'factor-title').focus({preventScroll: true});
     }
   } catch (error) {
-    if (epoch === currentEpoch) notice(error.message);
+    if (epoch === currentEpoch) notice(error.message, {error: true});
   } finally {
     if (epoch === currentEpoch) loginBusy = false;
     renderControls();
@@ -533,7 +570,7 @@ async function logout({announce = true} = {}) {
   renderControls();
   try {
     await api('/api/logout', {method: 'POST', body: {}});
-    if (epoch === currentEpoch && announce) notice('Signed out.', {toast: true});
+    if (epoch === currentEpoch && announce) notice('Signed out.');
   } catch (error) {
     if (epoch === currentEpoch) notice(`Server sign-out was not confirmed. ${error.message} Reload to check your session.`);
   } finally {
@@ -543,6 +580,28 @@ async function logout({announce = true} = {}) {
 }
 $('logout').addEventListener('click', () => void logout());
 $('back-to-login').addEventListener('click', () => void logout({announce: false}));
+
+const resetDemo = $('reset-demo');
+function showResetDemo(event) {
+  resetDemo.hidden = !(event.metaKey && event.shiftKey);
+}
+window.addEventListener('keydown', showResetDemo);
+window.addEventListener('keyup', showResetDemo);
+window.addEventListener('blur', () => { resetDemo.hidden = true; });
+window.addEventListener('visibilitychange', () => { resetDemo.hidden = true; });
+resetDemo.addEventListener('click', async () => {
+  if (resetDemo.disabled || !window.confirm('Reset the demo? This clears phone pairing, sign-in sessions, saved apps, and activity.')) return;
+  resetDemo.disabled = true;
+  try {
+    await api('/api/demo/reset', {method: 'POST', body: {}});
+    signOutLocally();
+    notice('Demo reset. Sign in to enroll your phone again.');
+  } catch (error) {
+    notice(error.message, {error: true});
+  } finally {
+    resetDemo.disabled = false;
+  }
+});
 
 async function createPairing() {
   if (pairBusy || pairing || pairingElsewhere || Date.now() < pairingRetryAt || !session?.pending || session.setup?.phone) return;
@@ -633,7 +692,6 @@ function openPairingChannel(pairingId, currentEpoch) {
 function openPhoneReplacement() {
   if (replacementBusy || (!account && !session?.setup?.phone)) return;
   if (account && replacementPairing) return $('replacement-qr-dialog').showModal();
-  $('replace-phone-error').hidden = true;
   $('replace-phone-description').textContent = account
     ? 'Scan a setup QR code with your new phone. Your current phone stays enrolled until the new phone finishes enrollment. Then verify the new phone nearby.'
     : 'Verify your current phone first to approve this change. Then we’ll show a setup QR code for your new phone. Keep Nearkey open on your current phone.';
@@ -646,7 +704,6 @@ async function startReplacement() {
   const currentEpoch = epoch;
   replacementBusy = true;
   accountRevision++;
-  $('replace-phone-error').hidden = true;
   renderControls();
   try {
     const result = await api('/api/phones/replacement', {method: 'POST', body: {}, signal: lifetime.signal});
@@ -659,12 +716,7 @@ async function startReplacement() {
     if (epoch !== currentEpoch) return;
     if (error.status === 401) return flow.onSessionLost();
     if (error.code === 'verification_required') return void resumeSetup();
-    if ($('replacement-qr-dialog').open) notice(error.message);
-    else {
-      $('replace-phone-error').textContent = error.message;
-      $('replace-phone-error').hidden = false;
-      if (!$('replace-phone-dialog').open) $('replace-phone-dialog').showModal();
-    }
+    notice(error.message, {error: true});
   } finally {
     if (epoch === currentEpoch) replacementBusy = false;
     renderControls();
@@ -723,7 +775,6 @@ $('replacement-qr-dialog').addEventListener('cancel', event => {
 function openAppForm(event) {
   if (!account || appBusy || $('app-dialog').open) return;
   $('app-form').reset();
-  $('app-form-error').hidden = true;
   appOpener = event.currentTarget;
   $('app-dialog').showModal();
   $('app-name').focus();
@@ -738,8 +789,7 @@ $('app-form').addEventListener('submit', async event => {
   if (!account || appBusy) return;
   const body = {name: $('app-name').value.trim(), url: $('app-url').value.trim()};
   if (!body.name) {
-    $('app-form-error').textContent = 'Enter an app name.';
-    $('app-form-error').hidden = false;
+    notice('Enter an app name.', {error: true});
     $('app-name').focus();
     return;
   }
@@ -747,7 +797,6 @@ $('app-form').addEventListener('submit', async event => {
   appBusy = true;
   // Invalidate account reads already in flight before the save began.
   accountRevision++;
-  $('app-form-error').hidden = true;
   renderControls();
   try {
     const {app} = await api('/api/apps', {method: 'POST', body, signal: lifetime.signal});
@@ -762,8 +811,7 @@ $('app-form').addEventListener('submit', async event => {
     if (epoch !== currentEpoch) return;
     if (error.status === 401) return flow.onSessionLost();
     if (error.code === 'verification_required') return void resumeSetup();
-    $('app-form-error').textContent = error.message;
-    $('app-form-error').hidden = false;
+    notice(error.message, {error: true});
   } finally {
     if (epoch === currentEpoch) appBusy = false;
     renderControls();
@@ -851,7 +899,9 @@ function animateCardSizes() {
 const stopCardMotion = animateCardSizes();
 const ticker = setInterval(tick, 250);
 window.addEventListener('pagehide', () => {
+  notice();
   resetLifetime();
+  bluetooth.disconnect();
   stopCardMotion();
   clearInterval(ticker);
 });
@@ -874,6 +924,15 @@ async function boot() {
       loginBusy = false;
       restoringSession = false;
       renderControls();
+      // The first session and font layout should appear at their final size.
+      // Enable motion only after ResizeObserver has measured that initial view.
+      void (document.fonts?.ready || Promise.resolve()).then(() => {
+        if (typeof requestAnimationFrame !== 'function') return;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const card = document.querySelector('.login-card');
+          if (card) card.dataset.sizeMotion = 'ready';
+        }));
+      });
     }
   }
 }

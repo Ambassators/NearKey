@@ -141,14 +141,16 @@ export class PhoneBluetooth {
       : 'Phone connection timed out. Click “Reconnect phone” to try again.'),
       Math.min(this.timeoutMs, token.expiresAt - Date.now()));
     const disconnected = () => this.abort(token, 'Phone disconnected. Reconnect to retry this pending challenge.');
+    let completed = false;
     try {
       this.onProgress('Finding permitted phone');
       const device = await this.remembered(token);
+      this.device = device;
       token.device = device;
       device.addEventListener('gattserverdisconnected', disconnected);
       // Late native connect results are disconnected too; never leak a cancelled connection.
-      this.onProgress('Connecting Bluetooth');
-      const server = await this.step(token, () => device.gatt.connect().then(server => {
+      this.onProgress(device.gatt.connected ? 'Using connected phone' : 'Connecting Bluetooth');
+      const server = device.gatt.connected ? device.gatt : await this.step(token, () => device.gatt.connect().then(server => {
         if (token.controller.signal.aborted) device.gatt.disconnect();
         return server;
       }));
@@ -169,6 +171,7 @@ export class PhoneBluetooth {
       this.onProgress(`Phone proof received (${value.byteLength} bytes)`);
       const signature = parseProof(value, challenge.id);
       this.onProgress('Phone signature received');
+      completed = true;
       return signature;
     } catch (error) {
       this.onProgress(token.controller.signal.aborted ? 'Bluetooth attempt stopped' : 'Bluetooth attempt interrupted');
@@ -177,7 +180,12 @@ export class PhoneBluetooth {
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);
       token.device?.removeEventListener('gattserverdisconnected', disconnected);
-      try { token.device?.gatt?.disconnect(); } catch { /* disconnected/unavailable native device */ }
+      // Keep a successful foreground link for the next sign-in. macOS can lose
+      // the peripheral's address between disconnect and a fresh GATT connect.
+      // Every proof still uses the new server challenge and its original deadline.
+      if (!completed) {
+        try { token.device?.gatt?.disconnect(); } catch { /* disconnected/unavailable native device */ }
+      }
       this.release(token);
     }
   }
@@ -218,9 +226,13 @@ export class PhoneBluetooth {
     if (this.active) this.abort(this.active, 'Bluetooth attempt cancelled.');
   }
 
-  forget() {
+  disconnect() {
     this.cancel();
-    try { this.device?.gatt?.disconnect(); } catch { /* native connection already closed */ }
+    try { this.device?.gatt?.disconnect(); } catch { /* native link already closed */ }
+  }
+
+  forget() {
+    this.disconnect();
     this.device = null;
     this.deviceId = null;
     try { this.storage?.removeItem(DEVICE_KEY); } catch { /* unavailable browser storage */ }

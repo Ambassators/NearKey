@@ -4,6 +4,9 @@ import http from 'node:http';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { WebSocket } from 'ws';
 import { createApp, validateOrigin } from '../server/app.mjs';
 import { parsePublicKey, parseSignature } from '../server/crypto.mjs';
@@ -134,6 +137,97 @@ function replacementEnrollment(pairing, pair = keyPair()) {
     signature: signature(pair, enrollmentText(pairing.pairingCode, pair.encoded))}};
 }
 
+async function pairingFile(t) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'nearkey-pairing-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  return path.join(directory, 'private', 'phone.json');
+}
+
+test('saved phone pairing authenticates fresh challenges after three server restarts', async (t) => {
+  const file = await pairingFile(t);
+  let f = await fixture(t, {pairingFile: file});
+  const enrolled = await f.enrolled();
+  await f.complete(enrolled, await f.challenge(enrolled));
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(saved.phone.id, enrolled.phoneId);
+  assert.equal(saved.phone.deviceToken, enrolled.deviceToken);
+  assert.equal(saved.phone.publicKey, enrolled.pair.encoded);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.equal((await stat(path.dirname(file))).mode & 0o777, 0o700);
+  assert.deepEqual(Object.keys(saved.phone).sort(), ['deviceToken', 'id', 'label', 'publicKey']);
+  for (let restart = 0; restart < 3; restart++) {
+    await f.app.close();
+    f = await fixture(t, {pairingFile: file});
+    assert.equal((await f.request('/api/account', {cookie: enrolled.cookie})).status, 401);
+    const cookie = await f.login();
+    const state = (await f.request('/api/session', {cookie})).data;
+    assert.equal(state.authenticated, false);
+    assert.equal(state.setup.phone.id, enrolled.phoneId);
+    assert.equal(state.setup.phone.online, false);
+    assert.equal((await f.request('/api/pairing', {method: 'POST', cookie, body: {}})).status, 409);
+    const phone = {...enrolled, cookie, ...await f.connect(enrolled.deviceToken)};
+    const challenge = await f.challenge(phone);
+    assert.equal((await f.complete({...phone, pair: keyPair()}, challenge)).status, 403);
+    assert.equal((await f.complete(phone, challenge)).data.authenticated, true);
+    assert.equal((await f.request('/api/account', {cookie})).data.phone.id, enrolled.phoneId);
+    assert.equal((await f.request('/.data/phone.json')).status, 404);
+  }
+});
+
+test('phone replacement remains saved and old credentials stay revoked after restart', async (t) => {
+  const file = await pairingFile(t);
+  const f = await fixture(t, {pairingFile: file});
+  const old = await f.enrolled();
+  await f.complete(old, await f.challenge(old));
+  const ticket = await f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie: old.cookie});
+  const next = replacementEnrollment(ticket.data);
+  const enrolled = await f.request('/api/phones/enroll', {method: 'POST', body: next.body});
+  assert.equal(enrolled.status, 200);
+  await f.app.close();
+  const fresh = await fixture(t, {pairingFile: file});
+  await rejectUpgrade(fresh.base, '/api/phone-channel', {Authorization: `Bearer ${old.deviceToken}`}, 401);
+  const phone = {pair: next.pair, ...enrolled.data, cookie: await fresh.login(),
+    ...await fresh.connect(enrolled.data.deviceToken)};
+  assert.equal((await fresh.complete(phone, await fresh.challenge(phone))).data.authenticated, true);
+});
+
+test('failed pairing save preserves the current phone and permits retry', async (t) => {
+  const file = await pairingFile(t);
+  const f = await fixture(t, {pairingFile: file});
+  const old = await f.enrolled();
+  await f.complete(old, await f.challenge(old));
+  const ticket = await f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie: old.cookie});
+  const next = replacementEnrollment(ticket.data);
+  const original = await readFile(file, 'utf8');
+  await rename(file, file + '.backup');
+  await mkdir(file);
+  const result = await f.request('/api/phones/enroll', {method: 'POST', body: next.body});
+  assert.equal(result.status, 500);
+  assert.equal((await f.request('/api/account', {cookie: old.cookie})).data.phone.id, old.phoneId);
+  assert.equal(old.ws.readyState, WebSocket.OPEN);
+  assert.equal(await readFile(file + '.backup', 'utf8'), original);
+  await rm(file, {recursive: true});
+  await rename(file + '.backup', file);
+  assert.equal((await f.request('/api/phones/enroll', {method: 'POST', body: next.body})).status, 200);
+});
+
+test('invalid or mismatched saved pairing fails startup instead of reopening enrollment', async (t) => {
+  const file = await pairingFile(t);
+  const f = await fixture(t, {pairingFile: file});
+  await f.pair();
+  await f.app.close();
+  const original = await readFile(file, 'utf8');
+  for (const contents of ['broken json', JSON.stringify({...JSON.parse(original), version: 99}),
+    JSON.stringify({...JSON.parse(original), phone: {...JSON.parse(original).phone, publicKey: 'invalid'}})]) {
+    await writeFile(file, contents);
+    await assert.rejects(createApp({username: 'demo', pairingFile: file}), /Saved phone pairing is invalid/);
+  }
+  await writeFile(file, original);
+  await assert.rejects(createApp({pairingFile: file}), /Saved phone pairing is invalid/);
+  await assert.rejects(createApp({username: 'demo', publicOrigin: 'http://localhost:9999', pairingFile: file}),
+    /Saved phone pairing is invalid/);
+});
+
 test('phone replacement requires an existing verified session and re-verifies the new phone', async (t) => {
   const f = await fixture(t);
   const replace = (cookie) => f.request('/api/phones/replacement', {method: 'POST', body: {}, cookie});
@@ -259,12 +353,14 @@ test('wire texts, real DER signatures and canonical SPKI enforce the shared cont
 
 test('default admin credentials open only a pending login', async (t) => {
   const f = await fixture(t, {username: undefined, password: undefined});
-  const login = await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'password'}});
+  const login = await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'mint-river-otter-47'}});
   assert.equal(login.status, 200);
   assert.equal(login.data.authenticated, false);
   assert.equal(login.data.pending, true);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await f.request('/api/account', {cookie})).status, 403);
+  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'password'}})).status, 401);
+  assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'admin', password: 'password1'}})).status, 401);
   assert.equal((await f.request('/api/login', {method: 'POST', body: {username: 'demo', password: 'demo-passive-key'}})).status, 401);
 });
 
@@ -925,4 +1021,21 @@ test('serves only the two bundled fonts through explicit same-origin asset route
   }
   assert.equal((await f.request('/web/fonts/dm-sans-OFL.txt')).status, 404);
   assert.equal((await f.request('/web/fonts/other.ttf')).status, 404);
+});
+
+test('local demo reset removes durable enrollment and invalidates sessions and phone tokens', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'nearkey-reset-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const pairingFile = path.join(directory, 'phone.json');
+  const f = await fixture(t, {pairingFile});
+  const phone = await f.pair();
+  const rejected = await f.request('/api/demo/reset', {method: 'POST', body: {}, headers: {Origin: 'https://foreign.example'}});
+  assert.equal(rejected.status, 403);
+  assert.ok(await stat(pairingFile));
+  const reset = await f.request('/api/demo/reset', {method: 'POST', body: {}});
+  assert.equal(reset.status, 200);
+  await assert.rejects(stat(pairingFile), {code: 'ENOENT'});
+  assert.equal((await f.request('/api/account', {cookie: phone.cookie})).status, 401);
+  const cookie = await f.login();
+  assert.equal((await f.request('/api/pairing', {method: 'POST', body: {}, cookie})).status, 200);
 });

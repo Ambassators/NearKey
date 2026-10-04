@@ -25,15 +25,15 @@ class WebsiteConnection(
         private set
     var socket: WebSocket? = null
         private set
-    private var foreground = false
+    private var running = false
     private var delay = 1000L
     private val reconnect = Runnable { connect() }
 
-    fun start() { foreground = true; connect() }
+    fun start() { running = true; connect() }
 
     fun stop() {
-        foreground = false
-        disconnect("App paused")
+        running = false
+        disconnect("Verification stopped")
         api.cancelRequests()
     }
 
@@ -46,7 +46,7 @@ class WebsiteConnection(
     }
 
     private fun connect() {
-        if (!foreground || socket != null) return
+        if (!running || socket != null) return
         handler.removeCallbacks(reconnect)
         try {
             key.publicKey() // An enrolled registration must never create a replacement key.
@@ -54,7 +54,7 @@ class WebsiteConnection(
             changed()
             socket = api.channel(api.origin(website.origin), website.token, object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) { handler.post {
-                    if (!foreground || socket !== webSocket) return@post
+                    if (!running || socket !== webSocket) return@post
                     try {
                         require(text.length <= 8192) { "Phone message too large" }
                         val json = JSONObject(text)
@@ -96,7 +96,7 @@ class WebsiteConnection(
         } catch (e: Exception) {
             status = e.message ?: "Cannot connect"
             changed()
-            if (foreground && e.message == LocalNetwork.WIFI_REQUIRED) {
+            if (running && e.message == LocalNetwork.WIFI_REQUIRED) {
                 handler.postDelayed(reconnect, delay)
                 delay = (delay * 2).coerceAtMost(15_000)
             }
@@ -106,7 +106,7 @@ class WebsiteConnection(
     private fun connectionLost(ws: WebSocket, message: String, retry: Boolean = true) {
         if (socket !== ws) return
         disconnect(message)
-        if (foreground && retry) {
+        if (running && retry) {
             handler.postDelayed(reconnect, delay)
             delay = (delay * 2).coerceAtMost(15_000)
         }

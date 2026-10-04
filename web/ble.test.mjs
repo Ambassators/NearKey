@@ -63,6 +63,7 @@ function phone(c, options = {}) {
     }};
   }};
   device.gatt = {
+    getPrimaryService: server.getPrimaryService,
     connected: false,
     connect: async () => {
       calls.push(['connect']);
@@ -135,7 +136,7 @@ test('chooser runs synchronously from caller and scopes the granted service; onl
   assert.equal(bluetooth.busy, false);
 });
 
-test('remembered permitted device automatically connects, writes with response then reads full proof and disconnects', async () => {
+test('remembered permitted device automatically connects, writes with response and retains a successful link', async () => {
   const c = challenge();
   const mock = phone(c);
   let chooserCalls = 0;
@@ -147,7 +148,7 @@ test('remembered permitted device automatically connects, writes with response t
   assert.equal(chooserCalls, 0);
   assert.equal(Buffer.concat(mock.writes).toString(), `${JSON.stringify(bleRequest(c))}\n`);
   assert.ok(mock.calls.findIndex(call => call[0] === 'read') > mock.calls.findLastIndex(call => call[0] === 'write'));
-  assert.equal(mock.device.gatt.connected, false);
+  assert.equal(mock.device.gatt.connected, true);
   assert.ok(progress.includes('Reading phone signature'));
   assert.equal(progress.at(-1), 'Phone signature received');
   for (const secret of [c.id, c.nonce, mock.signature, mock.device.id]) {
@@ -165,6 +166,30 @@ for (const [name, getDevices] of [['getDevices unavailable', undefined], ['remem
     assert.equal(choices, 0);
   });
 }
+
+test('three distinct login proofs reuse one live link and page teardown disconnects it', async () => {
+  const challenges = [0, 1, 2].map(i => ({...challenge(), id: `login-${i}`, nonce: String(i).repeat(43)}));
+  let current;
+  const mock = phone(challenges[0], {read: () => proofView({
+    v: CONTRACT_VERSION, challengeId: current.id, signature: signatureFor(current),
+  })});
+  const bluetooth = new PhoneBluetooth({secure: true, storage: storage(mock.device.id), bluetooth: {
+    requestDevice() { throw new Error('No chooser needed'); }, getDevices: async () => [mock.device],
+  }});
+  for (const c of challenges) {
+    current = c;
+    const proof = await bluetooth.prove(c);
+    assert.ok(verify('sha256', Buffer.from(approvalText(c)), key.publicKey, Buffer.from(proof, 'base64url')));
+    await tick();
+    bluetooth.cancel(); // Cancelling a finished flow must preserve the idle link.
+    assert.equal(mock.device.gatt.connected, true);
+  }
+  assert.equal(mock.calls.filter(([name]) => name === 'connect').length, 1);
+  const requests = Buffer.concat(mock.writes).toString().trim().split('\n').map(JSON.parse);
+  assert.deepEqual(requests, challenges.map(bleRequest));
+  bluetooth.disconnect();
+  assert.equal(mock.device.gatt.connected, false);
+});
 
 test('connection failure releases controls and permits retry of the same pending challenge', async () => {
   const c = challenge();

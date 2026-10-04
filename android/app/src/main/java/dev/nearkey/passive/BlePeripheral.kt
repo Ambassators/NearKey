@@ -19,7 +19,7 @@ import android.os.ParcelUuid
 import android.os.SystemClock
 import java.util.UUID
 
-/** All state and callbacks run on the activity's main handler. No background service. */
+/** All state and callbacks run on the authenticator's main handler. */
 @SuppressLint("MissingPermission")
 class BlePeripheral(
     private val context: Context,
@@ -47,7 +47,7 @@ class BlePeripheral(
     private fun live(): Boolean = active && (challenge == null ||
         (SystemClock.elapsedRealtime() < stopAtElapsed && System.currentTimeMillis() < challenge!!.expiresAt))
 
-    // Retain the foreground GATT service and advertisement between logins. Restarting
+    // Retain the service-owned GATT service and advertisement between logins. Restarting
     // the advertiser changes Android's private BLE address, stranding Chrome's device.
     // Only the authenticated channel installs a challenge; idle mode cannot sign.
     fun setChallenge(next: Challenge?) {
@@ -65,8 +65,6 @@ class BlePeripheral(
         stopAtElapsed = if (remaining == null) Long.MAX_VALUE else SystemClock.elapsedRealtime() + remaining
         if (remaining != null) handler.postDelayed(expire, remaining)
         if (next == null) {
-            try { peer?.let { server?.cancelConnection(it) } }
-            catch (_: SecurityException) { fail("Bluetooth permission was revoked"); return }
             onStatus("Bluetooth ready for the next sign-in")
         }
         if (advertisingReady) {

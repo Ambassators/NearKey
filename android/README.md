@@ -1,8 +1,9 @@
 # NearKey Android authenticator
 
-Foreground native Kotlin app for **Bluetooth login verification**, implementing
-[`shared/PROTOCOL.md`](../shared/PROTOCOL.md) version 2. No Compose, background
-service, phone confirmation, biometrics, simulator or manual proof path.
+Native Kotlin app with background Bluetooth verification for **Bluetooth login verification**, implementing
+[`shared/PROTOCOL.md`](../shared/PROTOCOL.md) version 2. A connected-device foreground service owns the authenticated website
+channels and Bluetooth peripheral. No Compose, phone confirmation, biometrics,
+simulator or manual proof path.
 
 ## Phone screens
 
@@ -15,7 +16,7 @@ still finish in the browser. A website that is paired but has unfinished Bluetoo
 setup resumes the last step when the app is reopened.
 
 The list shows all enrolled website origins and their live connection status.
-The fixed **+** button at the bottom left opens setup for another website. Each
+The full-width **Add website** button at the bottom opens setup for another website. Each
 origin keeps its own credential and authenticated channel; adding a website
 preserves existing registrations. The demo server still supports one account and
 one phone per server instance. Dashboard app metadata does not create a phone
@@ -27,9 +28,63 @@ server registration still needs an offline reset before pairing again. The phone
 key is retained while any registrations remain. Existing single-server app
 credentials migrate into the list on upgrade. Pairing codes stay in memory.
 
-All channels operate only while the app is in the foreground. Concurrent login
+After Bluetooth permission is granted, the service keeps channels and Bluetooth
+available when the UI is backgrounded, closed or removed from Recents and when the
+screen is locked/off. Concurrent login
 requests from different origins use the Bluetooth peripheral one at a time and
 keep their original server deadlines.
+
+## Background and screen-off operation
+
+Open NearKey once after installing/upgrading, with saved websites and Nearby
+devices permission granted. The service shows **NearKey is running** and starts
+automatically after initial Bluetooth setup. Notification permission is requested
+on Android 13+; denying it does not disable the service, but hides its notification
+from the notification drawer (Android still lists active foreground apps).
+
+After setup, use the **Verify with the screen off** prompt, or tap a website →
+**Background settings** → **Open battery settings**. Find NearKey and choose
+**Don't optimize**/**Unrestricted**, depending on the phone. Without this setting,
+Android Doze can suspend the WebSocket network channel even with a foreground
+service. Some manufacturers also require allowing autostart/background activity
+in their own battery settings. Bluetooth and the phone's internet or local Wi-Fi
+connection must remain available.
+
+A partial wake lock keeps the CPU available for WebSocket and GATT callbacks
+without keeping the screen lit; it is released when the service stops. Continuous
+availability uses extra battery. Challenge expiry is scheduled only while work
+is pending; UI countdown/shake detection stops when the screen leaves the app.
+
+**Pause** in the running notification stops background verification until NearKey
+is reopened. Reopening resumes it. The service asks Android to restart it after
+process reclamation and resumes saved, completed setups after reboot (once the
+phone is unlocked) or an app upgrade. These restarts are best effort under Android
+and manufacturer restrictions. A powered-off phone cannot run the app;
+force-stopping it or using Android's active-app **Stop** requires reopening NearKey.
+Resetting the demo or forgetting the last website stops the service and Bluetooth.
+
+`AuthenticatorLifetimeTest` covers screen lock/task removal, reopening, rotation,
+repeated service starts, foreground-only setup and service restart ownership.
+Protocol validation, signing text, stale callback checks, server deadlines, and
+cancellation/channel-loss proof cleanup remain in force in the background.
+
+Manual phone verification after installing the APK:
+
+1. Finish enrollment and Bluetooth setup, allow notifications and remove battery
+   optimization. Verify the running notification appears.
+2. Press Home, start a browser login and complete real Bluetooth verification.
+   Repeat after locking the phone and after removing NearKey from Recents.
+3. Leave the phone unplugged and idle long enough for Doze (or force Doze with
+   Android debug tools), then repeat a fresh login with the screen still off.
+   Check both network and Bluetooth; a wake lock alone does not exempt networking.
+4. Cancel and expire pending logins with the screen off; old BLE requests/proofs
+   must fail. Disconnect Wi-Fi/server, restore it, and verify a fresh challenge.
+5. Reboot/unlock and test a new login before opening NearKey. Repeat after an app
+   upgrade without clearing enrollment. Check reopening after process reclamation
+   does not create duplicate authenticated channels or GATT peripherals.
+6. Pause from the notification and verify background requests stop; reopen to
+   resume. Reset the demo/forget the last website and check the notification,
+   sockets, Bluetooth and wake lock all stop. Force-stop requires reopening.
 
 ## Build
 
@@ -120,7 +175,7 @@ before sending enrollment and reconnects enrolled websites after Wi-Fi returns.
    Hardware backing is best effort, reported from KeyInfo, never guaranteed.
    Enrollment sends DER SPKI and DER SHA256withECDSA proof with unpadded base64url.
    The returned phone token lives in app-private preferences; backup is disabled.
-3. Keep the phone app visible. Bluetooth must already be enabled. Tap
+3. Complete initial setup with the phone app visible. Bluetooth must already be enabled. Tap
    **Connect Bluetooth & finish**, granting Nearby devices permissions if
    prompted, then explicitly click the browser's first-time Bluetooth chooser.
    Setup mode advertises the service UUID plus the phone's configured Bluetooth
@@ -153,17 +208,19 @@ nonce, phone ID, expiry, username, service name and pending-session identifier.
 The prefix is `NEARKEY-LOGIN-V2`; enrollment retains `NEARKEY-ENROLL-V1`.
 Proof exists before the final write ACK. GATT reads return the remaining proof at each offset, including an empty terminal
 read. Android's ATT stack clips packets to the actual negotiated MTU, avoiding a stale app-side MTU on reused links.
-The foreground app keeps one GATT service and advertisement available between
+The service keeps one GATT service and advertisement available between
 logins so Android does not replace the private BLE address remembered by the
-browser. Idle advertising cannot sign. Only one central is accepted. Disconnect
+browser. The browser also retains its successful GATT link while the page stays
+open, reusing it for fresh challenges and disconnecting on page teardown.
+Idle advertising cannot sign. Only one central is accepted. Disconnect
 clears buffers/proof. Cancel, expiry and channel loss immediately discard the
 pending signing challenge and its proof; each new challenge retains its own
 original wall-clock and monotonic deadline. Repeated readiness requests do not
-extend that deadline. Losing every website connection, local reset or leaving
-foreground closes GATT/advertising. A new browser page still needs explicit phone
+extend that deadline. Losing every website connection, local reset or stopping the runtime
+closes GATT/advertising. Leaving the UI preserves service-owned connections. A new browser page still needs explicit phone
 selection when its browser does not support the permitted-device API.
 
-Reconnect uses bounded exponential delay while foreground and accepts only live
+Reconnect uses bounded exponential delay while the runtime is active and accepts only live
 challenges resent by the authenticated server. Old socket and HTTP callbacks
 cannot mutate a new channel/session. Radio/permission/peripheral failures are
 shown, never silently toggle Bluetooth. Open a website’s **Bluetooth setup** after enabling Bluetooth or granting
@@ -172,10 +229,20 @@ expired challenges or challenges appearing more than 60 seconds in the future.
 
 ## Reset and verification boundaries
 
-The demo server's in-memory state resets on restart. **Forget website**
+Shake the phone while NearKey is open to reveal a circular **reset demo** overlay
+in the top-right corner of any screen. The button stays visible across screen changes and rotation. Tap it and
+confirm to stop Bluetooth and website connections, erase every local registration
+and the phone key, and return to the first setup screen. It is disabled while
+enrollment is in progress. This resets the phone only; reset server pairing
+offline before enrolling again. A single bump or ordinary motion does not reveal
+the button, and shake detection stops while the app is paused.
+
+The demo server preserves phone registration in its private pairing file across
+restarts; sign-in sessions and temporary challenges reset. Open the app once after upgrading to enable background verification
+using the saved registration. **Forget website**
 erases that website’s local token, not the server’s registration. The key is
 erased only after the last website is forgotten. Existing phone
-replacement is never automatic. Coordinate an explicit offline server reset and
+replacement is never automatic. Coordinate an explicit offline reset of the server's pairing file and
 forget local enrollment before pairing anew. An interrupted enrollment may have
 committed on the server without saving the token locally; resolve it with the
 same offline reset, not password-only replacement.
@@ -193,8 +260,10 @@ capable phone and use Mac Chromium. Verify first chooser permission, remembered
 reconnect and chooser fallback, dashboard locked before verification, one login
 completion only, wrong phone/nonce/session context rejection,
 long proof reads at default MTU, disconnect/retry, cancel/logout/expiry, app
-background/channel-loss cleanup, permission denial, disabled radio and a phone
+background/screen-off continuity and channel-loss cleanup, permission denial, disabled radio and a phone
 without peripheral support. Also check QR camera capture, cancellation, Camera
 permission denial/manual fallback, and explicit enrollment after scan or adb
 prefill. Server API/replay/session tests run separately.
 Installing or launching the APK does not establish that Bluetooth verification works.
+Also verify shaking reveals **reset demo** on setup and website screens, cancelling
+keeps registrations, and confirming returns to setup with no connections remaining.
